@@ -29,6 +29,10 @@ pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
              Turn it on in System Settings > Privacy & Security > Accessibility, then restart the app."
         ));
     }
+    if !crate::permissions::input_monitoring_granted(true) {
+        // The tap still works for the mouse, but macOS withholds keystrokes.
+        tracing::warn!("Input Monitoring is not granted; keystrokes will not be captured");
+    }
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
     std::thread::Builder::new()
         .name("da-input-tap".into())

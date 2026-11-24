@@ -320,7 +320,7 @@ fn set_autostart(app: AppHandle, on: bool) -> Result<(), String> {
 fn input_status_of(state: &AppState) -> InputStatus {
     InputStatus {
         supported: da_input::platform_supported(),
-        accessibility_ok: da_input::permissions::accessibility_trusted(false),
+        accessibility_ok: da_input::permissions::input_permissions_ok(false),
         peer_fingerprint: state.settings.lock().unwrap().input_peer.clone(),
         share: state.share.lock().unwrap().as_ref().map(|s| s.status()),
         error: state.input_error.lock().unwrap().clone(),
@@ -338,6 +338,10 @@ fn ensure_share(state: &AppState) -> Result<Arc<InputShare>, String> {
     if let Some(s) = state.share.lock().unwrap().clone() {
         return Ok(s);
     }
+    // Enter the app's Tokio runtime so starting the share (which spawns
+    // tasks) works whichever thread calls this, including the main thread.
+    let rt = tauri::async_runtime::handle();
+    let _guard = rt.inner().enter();
     match InputShare::start(state.node.clone(), Hotkeys::default()) {
         Ok(s) => {
             *state.share.lock().unwrap() = Some(s.clone());
@@ -398,7 +402,7 @@ fn switch_input(state: State<'_, AppState>, remote: bool) -> Result<(), String> 
 /// macOS: show the system prompt that leads to the Accessibility setting.
 #[tauri::command]
 fn request_accessibility() -> bool {
-    da_input::permissions::accessibility_trusted(true)
+    da_input::permissions::input_permissions_ok(true)
 }
 
 #[tauri::command]
@@ -496,9 +500,9 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                             "da-event",
                             UiEvent::Notice {
                                 text: format!(
-                                    "{peer} is connected, but macOS is blocking its keystrokes. In System Settings > \
-                                     Privacy & Security > Accessibility, remove DisplayAnything with the minus button, \
-                                     add it again, then restart the app."
+                                    "{peer} is connected, but macOS is blocking its keystrokes. In System Settings, \
+                                     search for Accessibility (under Privacy & Security), remove DisplayAnything with \
+                                     the minus button, add it again, then restart the app. Or run scripts/macos-setup.sh."
                                 ),
                             },
                         );
@@ -650,7 +654,7 @@ fn main() {
                     node.set_input_target(Some(t));
                     // On macOS, ask for Accessibility up front: without it the
                     // keyboard does not work when another computer drives this one.
-                    da_input::permissions::accessibility_trusted(true);
+                    da_input::permissions::input_permissions_ok(true);
                 }
                 Err(e) => tracing::warn!("receiving input is unavailable: {e:#}"),
             }

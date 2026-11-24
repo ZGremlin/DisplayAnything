@@ -29,6 +29,40 @@ pub fn accessibility_trusted(prompt: bool) -> bool {
     }
 }
 
+/// macOS: whether this app may see keystrokes from other apps (Input
+/// Monitoring). Without it, macOS still delivers mouse events to our event
+/// tap but quietly withholds key events. With `prompt`, macOS asks and adds
+/// the app to the Input Monitoring list. Always true on other platforms.
+#[cfg(target_os = "macos")]
+pub fn input_monitoring_granted(prompt: bool) -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightListenEventAccess() -> bool;
+        fn CGRequestListenEventAccess() -> bool;
+    }
+    unsafe {
+        if CGPreflightListenEventAccess() {
+            true
+        } else if prompt {
+            CGRequestListenEventAccess()
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn input_monitoring_granted(_prompt: bool) -> bool {
+    true
+}
+
+/// Everything keyboard and mouse sharing needs on this OS.
+pub fn input_permissions_ok(prompt: bool) -> bool {
+    let ax = accessibility_trusted(prompt);
+    let listen = input_monitoring_granted(prompt);
+    ax && listen
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn accessibility_trusted(_prompt: bool) -> bool {
     true

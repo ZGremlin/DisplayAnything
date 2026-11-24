@@ -65,14 +65,18 @@ say "Opening DisplayAnything (it will ask for Accessibility)"
 open "$APP"
 sleep 2
 
-say "Opening the Accessibility page in System Settings"
+say "Opening the Input Monitoring and Accessibility pages in System Settings"
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent" || true
+sleep 1
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" || true
 
 cat <<'MSG'
 
 Last step (macOS only lets you do this by hand):
-  In the System Settings window that just opened, switch DisplayAnything ON.
-  If macOS also asks about Input Monitoring, allow that too.
+  In System Settings, switch DisplayAnything ON under BOTH Accessibility and
+  Input Monitoring (macOS asks for each; the keyboard needs both, the mouse
+  works without them). If you can't find a page, type its name into the
+  System Settings search box.
   Then quit DisplayAnything from its tray icon and open it again.
 
 Done.
