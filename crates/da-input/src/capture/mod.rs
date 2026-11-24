@@ -68,7 +68,8 @@ impl Shared {
             });
         }
         if let Some(t) = out.switched {
-            platform::on_switch(t);
+            let held = self.switcher.lock().unwrap().held();
+            platform::on_switch(t, held);
             let _ = self.tx.send(ControllerMsg::Switched(t));
         }
         out.swallow

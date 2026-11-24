@@ -79,6 +79,11 @@ impl Switcher {
         self.remote_available
     }
 
+    /// Keys physically held right now.
+    pub fn held(&self) -> Vec<u16> {
+        self.held.iter().copied().collect()
+    }
+
     /// Tell the switcher whether a peer is connected. Losing the peer while
     /// it has input brings input straight back here.
     pub fn set_remote_available(&mut self, available: bool) -> Outcome {

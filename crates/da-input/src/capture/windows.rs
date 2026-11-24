@@ -9,20 +9,71 @@ use crate::keymap;
 use crate::switcher::Target;
 use crate::wire::{split_move, InputEvent, MouseButton};
 use anyhow::{anyhow, Result};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_NUMLOCK, VK_PAUSE};
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VIRTUAL_KEY, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_NUMLOCK, VK_PAUSE,
+    VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 /// (where the pointer was before going remote, where it is parked)
 static PARK: Mutex<Option<(POINT, POINT)>> = Mutex::new(None);
+/// Thread that owns the hooks, so it can be asked to reinstall them.
+static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
+/// Slow work on a switch (moving the pointer, releasing keys) runs here,
+/// never inside a hook callback.
+static SWITCH_JOBS: OnceLock<Mutex<Sender<SwitchJob>>> = OnceLock::new();
+/// The new target, and the keys physically held at the moment of switching.
+type SwitchJob = (Target, Vec<u16>);
+
+/// Posted to the hook thread to reinstall both hooks.
+const WM_REHOOK: u32 = WM_APP + 1;
+
+const MODIFIERS: [(u16, VIRTUAL_KEY); 8] = [
+    (keymap::LCTRL, VK_LCONTROL),
+    (keymap::RCTRL, VK_RCONTROL),
+    (keymap::LALT, VK_LMENU),
+    (keymap::RALT, VK_RMENU),
+    (keymap::LSHIFT, VK_LSHIFT),
+    (keymap::RSHIFT, VK_RSHIFT),
+    (keymap::LMETA, VK_LWIN),
+    (keymap::RMETA, VK_RWIN),
+];
+
+unsafe fn install_hooks(module: HINSTANCE) -> Result<(HHOOK, HHOOK)> {
+    let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), module, 0)
+        .map_err(|e| anyhow!("could not install the keyboard hook: {e}"))?;
+    let ms = match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = UnhookWindowsHookEx(kb);
+            return Err(anyhow!("could not install the mouse hook: {e}"));
+        }
+    };
+    Ok((kb, ms))
+}
 
 pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
     SHARED
         .set(shared)
         .map_err(|_| anyhow!("input capture is already running"))?;
+
+    let (job_tx, job_rx) = channel::<SwitchJob>();
+    let _ = SWITCH_JOBS.set(Mutex::new(job_tx));
+    std::thread::Builder::new()
+        .name("da-input-switch".into())
+        .spawn(move || {
+            for (t, held) in job_rx {
+                apply_switch(t, &held);
+            }
+        })?;
+
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
     std::thread::Builder::new()
         .name("da-input-hooks".into())
@@ -34,20 +85,35 @@ pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
                     return;
                 }
             };
-            let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), module, 0);
-            let ms = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0);
-            match (kb, ms) {
-                (Ok(_), Ok(_)) => {
+            // Make sure this thread has a message queue before anyone posts to it.
+            let mut msg = MSG::default();
+            let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+            HOOK_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
+            let mut hooks = match install_hooks(module) {
+                Ok(h) => {
                     let _ = ready_tx.send(Ok(()));
+                    h
                 }
-                (Err(e), _) | (_, Err(e)) => {
-                    let _ = ready_tx.send(Err(anyhow!("could not install input hooks: {e}")));
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
                     return;
                 }
-            }
+            };
             // Hooks are serviced by this thread's message loop.
-            let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                if msg.message == WM_REHOOK {
+                    // Windows silently drops a low-level hook whose callback
+                    // was ever too slow; reinstalling on each switch means a
+                    // dropped keyboard hook can't leave keys going to the
+                    // wrong machine.
+                    let _ = UnhookWindowsHookEx(hooks.0);
+                    let _ = UnhookWindowsHookEx(hooks.1);
+                    match install_hooks(module) {
+                        Ok(h) => hooks = h,
+                        Err(e) => tracing::error!("{e:#}"),
+                    }
+                    continue;
+                }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -61,9 +127,16 @@ pub(super) fn release_local_key(usage: u16) {
     crate::inject::windows_send_key(usage, false);
 }
 
-pub(super) fn on_switch(t: Target) {
+/// Called from the hook callback (hotkeys) or the app (buttons). Only queues
+/// the work: a hook callback that blocks gets its hook removed by Windows.
+pub(super) fn on_switch(t: Target, held: Vec<u16>) {
+    if let Some(tx) = SWITCH_JOBS.get() {
+        let _ = tx.lock().unwrap().send((t, held));
+    }
+}
+
+fn apply_switch(t: Target, held: &[u16]) {
     unsafe {
-        let mut park = PARK.lock().unwrap();
         match t {
             Target::Remote => {
                 let mut saved = POINT::default();
@@ -73,13 +146,26 @@ pub(super) fn on_switch(t: Target) {
                     y: GetSystemMetrics(SM_CYSCREEN) / 2,
                 };
                 let _ = SetCursorPos(centre.x, centre.y);
-                *park = Some((saved, centre));
+                *PARK.lock().unwrap() = Some((saved, centre));
             }
             Target::Local => {
-                if let Some((saved, _)) = park.take() {
+                let saved = PARK.lock().unwrap().take();
+                if let Some((saved, _)) = saved {
                     let _ = SetCursorPos(saved.x, saved.y);
                 }
+                // Windows may still think a modifier is down if its key-up
+                // went to the other machine; let go of any modifier that
+                // isn't physically held now.
+                for (usage, vk) in MODIFIERS {
+                    if !held.contains(&usage) && GetAsyncKeyState(vk.0 as i32) < 0 {
+                        crate::inject::windows_send_key(usage, false);
+                    }
+                }
             }
+        }
+        let tid = HOOK_THREAD.load(Ordering::SeqCst);
+        if tid != 0 {
+            let _ = PostThreadMessageW(tid, WM_REHOOK, WPARAM(0), LPARAM(0));
         }
     }
 }

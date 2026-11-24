@@ -9,4 +9,4 @@ pub(super) fn start(_shared: Arc<Shared>) -> Result<()> {
 
 pub(super) fn release_local_key(_usage: u16) {}
 
-pub(super) fn on_switch(_t: Target) {}
+pub(super) fn on_switch(_t: Target, _held: Vec<u16>) {}

@@ -95,7 +95,7 @@ pub(super) fn release_local_key(usage: u16) {
     crate::inject::macos_send_key(usage, false);
 }
 
-pub(super) fn on_switch(t: Target) {
+pub(super) fn on_switch(t: Target, _held: Vec<u16>) {
     let display = CGDisplay::main();
     unsafe {
         match t {
