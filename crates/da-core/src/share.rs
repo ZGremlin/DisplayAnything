@@ -37,7 +37,11 @@ pub struct ShareStatus {
 
 impl InputShare {
     /// Start capturing local input (it stays local until switched).
+    /// Must be called from inside a Tokio runtime (it spawns tasks).
     pub fn start(node: Arc<Node>, hotkeys: Hotkeys) -> Result<Arc<Self>> {
+        if tokio::runtime::Handle::try_current().is_err() {
+            anyhow::bail!("InputShare::start must run inside the Tokio runtime");
+        }
         let (controller, msgs) = Controller::start(hotkeys)?;
         let share = Arc::new(InputShare {
             node,

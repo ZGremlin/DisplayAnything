@@ -302,7 +302,15 @@ async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, opts: ServeOpts) -> Res
     }
     if !no_input {
         match PlatformInputTarget::new(InjectorOptions::default()) {
-            Ok(t) => node.set_input_target(Some(t)),
+            Ok(t) => {
+                node.set_input_target(Some(t));
+                if !da_core::da_input::permissions::accessibility_trusted(true) {
+                    eprintln!(
+                        "Warning: macOS Accessibility permission is missing, so keystrokes from other devices \
+                         will be blocked. Allow this app in System Settings > Privacy & Security > Accessibility."
+                    );
+                }
+            }
             Err(e) => eprintln!("Receiving keyboard and mouse input is off: {e:#}"),
         }
     }

@@ -290,8 +290,10 @@ fn ensure_share(state: &AppState) -> Result<Arc<InputShare>, String> {
 
 /// Choose which paired device our keyboard and mouse can switch to
 /// (`None` turns sharing off).
+// Async so it runs on the Tokio runtime: starting the share spawns tasks,
+// and plain (sync) commands run on the main thread, outside the runtime.
 #[tauri::command]
-fn set_input_peer(
+async fn set_input_peer(
     state: State<'_, AppState>,
     fingerprint: Option<String>,
 ) -> Result<InputStatus, String> {
@@ -431,6 +433,21 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                     Some(UiEvent::InputChanged)
                 }
                 Event::InputReceiving { peer, active } => {
+                    if active && !da_input::permissions::accessibility_trusted(false) {
+                        // macOS lets injected mouse moves through without the
+                        // permission but silently drops keystrokes.
+                        show_main(&app_e);
+                        let _ = app_e.emit(
+                            "da-event",
+                            UiEvent::Notice {
+                                text: format!(
+                                    "{peer} is connected, but macOS is blocking its keystrokes. In System Settings > \
+                                     Privacy & Security > Accessibility, remove DisplayAnything with the minus button, \
+                                     add it again, then restart the app."
+                                ),
+                            },
+                        );
+                    }
                     *state.receiving_from.lock().unwrap() = active.then_some(peer);
                     Some(UiEvent::InputChanged)
                 }
@@ -518,7 +535,38 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Write panics to `crash.log` in the data folder so a crash leaves a trace
+/// the user can send us.
+fn install_crash_log() {
+    let Ok(dir) = da_core::default_data_dir() else {
+        return;
+    };
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = std::fs::create_dir_all(&dir);
+        let when = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let text = format!(
+            "[{when}] DisplayAnything {} crashed: {info}\n{}\n\n",
+            env!("CARGO_PKG_VERSION"),
+            std::backtrace::Backtrace::force_capture()
+        );
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("crash.log"))
+        {
+            let _ = f.write_all(text.as_bytes());
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() {
+    install_crash_log();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -542,7 +590,12 @@ fn main() {
 
             // Let paired devices with permission drive this computer.
             match PlatformInputTarget::new(InjectorOptions::default()) {
-                Ok(t) => node.set_input_target(Some(t)),
+                Ok(t) => {
+                    node.set_input_target(Some(t));
+                    // On macOS, ask for Accessibility up front: without it the
+                    // keyboard does not work when another computer drives this one.
+                    da_input::permissions::accessibility_trusted(true);
+                }
                 Err(e) => tracing::warn!("receiving input is unavailable: {e:#}"),
             }
 
