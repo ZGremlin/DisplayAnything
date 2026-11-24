@@ -16,6 +16,7 @@ async function loadStatus() {
   $("name").textContent = s.name;
   $("fp").textContent = s.fingerprint;
   $("port").textContent = s.port;
+  $("build").textContent = s.build;
   if (s.listen_error) notice(s.listen_error);
   try { $("autostart").checked = await invoke("get_autostart"); } catch (_) { $("autostart").disabled = true; }
 }

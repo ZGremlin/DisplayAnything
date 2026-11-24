@@ -80,6 +80,8 @@ struct Status {
     port: u16,
     listen_error: Option<String>,
     data_dir: String,
+    /// Version plus the commit CI built from, so testers can tell builds apart.
+    build: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -133,6 +135,15 @@ fn show_main(app: &AppHandle) {
 // Commands
 // ---------------------------------------------------------------------------
 
+fn build_id() -> String {
+    let sha = option_env!("DA_BUILD").map(|s| &s[..s.len().min(7)]);
+    format!(
+        "{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        sha.unwrap_or("local build")
+    )
+}
+
 #[tauri::command]
 fn status(state: State<'_, AppState>) -> Status {
     let id = state.node.identity();
@@ -142,6 +153,7 @@ fn status(state: State<'_, AppState>) -> Status {
         port: DEFAULT_PORT,
         listen_error: state.listen_error.lock().unwrap().clone(),
         data_dir: state.data_dir.display().to_string(),
+        build: build_id(),
     }
 }
 

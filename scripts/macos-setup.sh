@@ -27,26 +27,46 @@ osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || tru
 sleep 1
 pkill -x da-tray >/dev/null 2>&1 || true
 
+# Find DisplayAnything.app inside a folder, unpacking any zips on the way
+# (the GitHub download is a zip that contains another zip).
+find_app() {
+  local dir="$1" depth=0 found
+  while (( depth < 3 )); do
+    found="$(find "$dir" -maxdepth 4 -name 'DisplayAnything.app' -type d -prune | head -n1)"
+    [[ -n "$found" ]] && { echo "$found"; return 0; }
+    local zips
+    zips="$(find "$dir" -maxdepth 4 -name '*.zip' -type f)"
+    [[ -z "$zips" ]] && return 1
+    while IFS= read -r z; do
+      ditto -x -k "$z" "$(dirname "$z")" && rm -f "$z"
+    done <<< "$zips"
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
+if [[ -z "$SRC" ]]; then
+  # No argument: use the newest DisplayAnything download, if there is one.
+  SRC="$(ls -td "$HOME"/Downloads/DisplayAnything-macOS* 2>/dev/null | head -n1 || true)"
+  [[ -n "$SRC" ]] && echo "Using the newest download: $SRC"
+fi
+
 if [[ -n "$SRC" ]]; then
   SRC="${SRC/#\~/$HOME}"
-  case "$SRC" in
-    *.zip)
-      say "Installing from $SRC"
-      TMP="$(mktemp -d)"
-      ditto -x -k "$SRC" "$TMP"
-      FOUND="$(find "$TMP" -maxdepth 3 -name 'DisplayAnything.app' -type d | head -n1)"
-      [[ -n "$FOUND" ]] || { echo "No DisplayAnything.app inside $SRC"; exit 1; }
-      rm -rf "$APP"
-      ditto "$FOUND" "$APP"
-      rm -rf "$TMP"
-      ;;
-    *.app|*.app/)
-      say "Installing from $SRC"
-      rm -rf "$APP"
-      ditto "$SRC" "$APP"
-      ;;
-    *) echo "Expected a .zip or .app, got: $SRC"; exit 1 ;;
-  esac
+  [[ -e "$SRC" ]] || { echo "Not found: $SRC"; exit 1; }
+  say "Installing from $SRC"
+  TMP="$(mktemp -d)"
+  if [[ -d "$SRC" && "$SRC" == *.app ]]; then
+    ditto "$SRC" "$TMP/DisplayAnything.app"
+  elif [[ -d "$SRC" ]]; then
+    ditto "$SRC" "$TMP/src"
+  else
+    ditto -x -k "$SRC" "$TMP" || { echo "Could not unzip $SRC"; exit 1; }
+  fi
+  FOUND="$(find_app "$TMP")" || { echo "No DisplayAnything.app found in $SRC"; rm -rf "$TMP"; exit 1; }
+  rm -rf "$APP"
+  ditto "$FOUND" "$APP"
+  rm -rf "$TMP"
 fi
 
 [[ -d "$APP" ]] || { echo "Can't find $APP. Pass the downloaded .zip as the first argument."; exit 1; }
@@ -69,6 +89,10 @@ say "Opening the Input Monitoring and Accessibility pages in System Settings"
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent" || true
 sleep 1
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" || true
+
+BUILD="$(stat -f '%Sm' "$APP/Contents/MacOS/da-tray" 2>/dev/null || echo unknown)"
+echo
+echo "Installed build: $BUILD (the window also shows the build number at the bottom)"
 
 cat <<'MSG'
 
