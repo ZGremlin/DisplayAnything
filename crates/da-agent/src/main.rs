@@ -65,36 +65,6 @@ enum Cmd {
     },
 }
 
-fn default_data_dir() -> Result<PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "DisplayAnything")
-        .context("could not find a data directory for this user")?;
-    Ok(dirs.data_dir().to_path_buf())
-}
-
-fn default_name() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .or_else(|| {
-            std::fs::read_to_string("/etc/hostname")
-                .ok()
-                .map(|s| s.trim().to_string())
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "DisplayAnything device".into())
-}
-
-/// Accept `192.168.1.20`, `192.168.1.20:47800`, `fe80::1` or `[fe80::1]:47800`.
-fn parse_addr(s: &str) -> Result<SocketAddr> {
-    if let Ok(a) = s.parse::<SocketAddr>() {
-        return Ok(a);
-    }
-    if let Ok(ip) = s.trim_matches(['[', ']']).parse::<IpAddr>() {
-        return Ok(SocketAddr::new(ip, DEFAULT_PORT));
-    }
-    bail!("'{s}' is not an IP address (try 192.168.1.20 or 192.168.1.20:{DEFAULT_PORT})")
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -104,22 +74,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let data_dir = match cli.data_dir {
         Some(d) => d,
-        None => default_data_dir()?,
+        None => da_core::default_data_dir()?,
     };
-    // The device name is remembered, so `--name` only needs to be given once.
-    let name_file = data_dir.join("device_name.txt");
-    let name = match cli.name {
-        Some(n) => {
-            std::fs::create_dir_all(&data_dir)?;
-            std::fs::write(&name_file, &n)?;
-            n
-        }
-        None => std::fs::read_to_string(&name_file)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(default_name),
-    };
+    let name = da_core::device_name(&data_dir, cli.name.as_deref())?;
     let identity = Identity::load_or_create(&data_dir, &name)?;
     let trust = TrustStore::load(&data_dir)?;
     let config = Config {
@@ -142,7 +99,7 @@ async fn main() -> Result<()> {
             no_auto_connect,
         } => serve(node, bind, port, no_discovery, no_auto_connect).await?,
         Cmd::Pair { addr } => {
-            let addr = parse_addr(&addr)?;
+            let addr = da_core::parse_addr(&addr)?;
             println!("Asking {addr} to show a pairing code...");
             let peer = node
                 .pair(addr, || async {
@@ -163,7 +120,7 @@ async fn main() -> Result<()> {
             );
         }
         Cmd::Connect { addr, pings } => {
-            let addr = parse_addr(&addr)?;
+            let addr = da_core::parse_addr(&addr)?;
             let mut s = node.connect(addr).await?;
             println!(
                 "Connected to {}. They allow: {:?}",

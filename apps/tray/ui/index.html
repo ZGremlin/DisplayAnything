@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DisplayAnything</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="name">DisplayAnything</h1>
+      <p class="muted">Fingerprint <span id="fp">…</span> · port <span id="port">…</span></p>
+    </div>
+    <label class="switch" title="Start DisplayAnything when you log in">
+      <input type="checkbox" id="autostart"> Start at login
+    </label>
+  </header>
+
+  <div id="notice" class="notice" hidden></div>
+
+  <section id="code-banner" class="banner" hidden>
+    <p><strong id="code-peer"></strong> wants to pair with this computer.</p>
+    <p class="code" id="code"></p>
+    <p class="muted">Type this code on that device. It expires in <span id="code-ttl"></span> s.</p>
+  </section>
+
+  <section class="card">
+    <h2>Pair a new device</h2>
+    <form id="pair-form">
+      <input id="pair-addr" placeholder="IP address, e.g. 192.168.1.20" autocomplete="off" required>
+      <button type="submit" id="pair-btn">Pair</button>
+      <button type="button" id="discover-btn" class="secondary">Find on network</button>
+    </form>
+    <ul id="found" class="found"></ul>
+    <form id="code-form" hidden>
+      <p>Enter the 6-digit code shown on the other device:</p>
+      <input id="code-input" inputmode="numeric" maxlength="7" placeholder="123 456" autocomplete="off">
+      <button type="submit">Confirm</button>
+      <button type="button" id="cancel-btn" class="secondary">Cancel</button>
+    </form>
+    <p id="pair-msg" class="muted"></p>
+  </section>
+
+  <section class="card">
+    <h2>Saved devices</h2>
+    <p id="empty" class="muted">No devices yet. Pair one above; it will reconnect on its own after that.</p>
+    <ul id="peers" class="peers"></ul>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
