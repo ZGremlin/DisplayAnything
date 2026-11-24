@@ -10,13 +10,16 @@ Design doc: https://claude.ai/artifact/SqBs1JcqAcTA3o4Rhp4xiz
 
 ## Status
 
-Milestone 1 (this code): device identity, pairing with a 6-digit code, encrypted connections by IP, saved devices that reconnect on their own, start at login, and a tray app. Screen and input sharing come in milestones 2 to 4.
+- Milestone 1: device identity, pairing with a 6-digit code, encrypted connections by IP, saved devices that reconnect on their own, start at login, tray app.
+- Milestone 2: keyboard and mouse sharing between two paired machines, switched with a hotkey; clipboard (text) follows.
+- Next: remote desktop (milestone 3) and display takeover (milestone 4).
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `crates/da-core` | Identity, pairing, trust store, TLS connections, discovery, auto-reconnect |
+| `crates/da-input` | Keyboard/mouse capture and injection (Windows, macOS), key mapping, switching logic |
 | `crates/da-agent` | Command-line agent (headless machines, scripting, testing) |
 | `apps/tray` | Tauri tray app: `src-tauri` (Rust) and `ui` (plain HTML/JS, no build step) |
 
@@ -42,9 +45,27 @@ Both machines must be on the same network, and TCP port 47800 must be allowed th
 
 With the CLI: `da-agent serve` on B, then `da-agent pair 192.168.1.20` on A, then `da-agent connect 192.168.1.20` to check the link and latency.
 
+## Keyboard and mouse sharing
+
+On the computer whose keyboard and mouse you want to use, open the tray window and pick the other device under **Keyboard and mouse**. Then:
+
+| Shortcut (Windows) | Shortcut (Mac) | Does |
+| --- | --- | --- |
+| Ctrl+Alt+→ | Ctrl+Option+→ | Send keyboard and mouse to the other computer |
+| Ctrl+Alt+← | Ctrl+Option+← | Bring them back |
+| Ctrl+Alt+Esc | Ctrl+Option+Esc | Always bring them back, even if the link is broken |
+
+The tray menu has the same switch. When input moves, the clipboard text moves with it. On a Mac receiving input from a PC keyboard, Ctrl and the Windows key are swapped so Ctrl+C copies.
+
+The receiving computer must allow it: under **Saved devices**, "May control this computer with its keyboard and mouse" (on by default).
+
+CLI: `da-agent serve --share-input-with "Mac mini"`.
+
+Known limits: Windows won't let a normal app send input to admin windows or UAC prompts; run the app as administrator if you need that.
+
 ## macOS notes
 
-No driver or paid Apple account is needed. Later milestones need Screen Recording, Accessibility and Input Monitoring permissions, granted once in System Settings › Privacy & Security.
+No driver or paid Apple account is needed. Keyboard and mouse sharing needs the **Accessibility** permission (System Settings › Privacy & Security › Accessibility); the app shows a button that opens the prompt. Screen sharing (later) will also need Screen Recording.
 
 ## Security
 

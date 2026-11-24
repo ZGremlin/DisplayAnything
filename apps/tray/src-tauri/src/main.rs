@@ -3,10 +3,12 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use da_core::da_input::{self, Hotkeys, InjectorOptions, Target};
 use da_core::{
-    discovery, AutoConnector, Config, Event, Fingerprint, Identity, Node, Permissions, TrustStore,
-    DEFAULT_PORT,
+    discovery, AutoConnector, Config, Event, Fingerprint, Identity, InputShare, Node, Permissions,
+    PlatformInputTarget, ShareStatus, TrustStore, DEFAULT_PORT,
 };
+use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -20,6 +22,30 @@ use tokio::sync::oneshot;
 
 const LAUNCHED_AT_LOGIN: &str = "--minimized";
 const AUTOSTART_SET_MARKER: &str = "autostart_configured";
+const SETTINGS_FILE: &str = "tray_settings.json";
+
+/// Settings the tray app remembers between runs.
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct Settings {
+    /// Fingerprint of the device we share our keyboard and mouse with.
+    #[serde(default)]
+    input_peer: Option<String>,
+}
+
+impl Settings {
+    fn load(dir: &std::path::Path) -> Self {
+        std::fs::read_to_string(dir.join(SETTINGS_FILE))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self, dir: &std::path::Path) {
+        if let Ok(t) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(dir.join(SETTINGS_FILE), t);
+        }
+    }
+}
 
 struct AppState {
     node: Arc<Node>,
@@ -27,6 +53,22 @@ struct AppState {
     listen_error: Mutex<Option<String>>,
     online: Mutex<HashSet<String>>,
     pending_code: Mutex<Option<oneshot::Sender<String>>>,
+    settings: Mutex<Settings>,
+    share: Mutex<Option<Arc<InputShare>>>,
+    input_error: Mutex<Option<String>>,
+    receiving_from: Mutex<Option<String>>,
+}
+
+#[derive(Serialize, Clone)]
+struct InputStatus {
+    supported: bool,
+    accessibility_ok: bool,
+    /// Fingerprint of the chosen peer.
+    peer_fingerprint: Option<String>,
+    share: Option<ShareStatus>,
+    error: Option<String>,
+    /// Name of a peer currently driving this computer.
+    receiving_from: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -66,6 +108,7 @@ enum UiEvent {
         reason: String,
     },
     PeersChanged,
+    InputChanged,
     Notice {
         text: String,
     },
@@ -210,6 +253,88 @@ fn set_autostart(app: AppHandle, on: bool) -> Result<(), String> {
     if on { al.enable() } else { al.disable() }.map_err(|e| e.to_string())
 }
 
+fn input_status_of(state: &AppState) -> InputStatus {
+    InputStatus {
+        supported: da_input::platform_supported(),
+        accessibility_ok: da_input::permissions::accessibility_trusted(false),
+        peer_fingerprint: state.settings.lock().unwrap().input_peer.clone(),
+        share: state.share.lock().unwrap().as_ref().map(|s| s.status()),
+        error: state.input_error.lock().unwrap().clone(),
+        receiving_from: state.receiving_from.lock().unwrap().clone(),
+    }
+}
+
+#[tauri::command]
+fn input_status(state: State<'_, AppState>) -> InputStatus {
+    input_status_of(&state)
+}
+
+/// Start capturing local input if it is not running yet.
+fn ensure_share(state: &AppState) -> Result<Arc<InputShare>, String> {
+    if let Some(s) = state.share.lock().unwrap().clone() {
+        return Ok(s);
+    }
+    match InputShare::start(state.node.clone(), Hotkeys::default()) {
+        Ok(s) => {
+            *state.share.lock().unwrap() = Some(s.clone());
+            *state.input_error.lock().unwrap() = None;
+            Ok(s)
+        }
+        Err(e) => {
+            let msg = format!("{e:#}");
+            *state.input_error.lock().unwrap() = Some(msg.clone());
+            Err(msg)
+        }
+    }
+}
+
+/// Choose which paired device our keyboard and mouse can switch to
+/// (`None` turns sharing off).
+#[tauri::command]
+fn set_input_peer(
+    state: State<'_, AppState>,
+    fingerprint: Option<String>,
+) -> Result<InputStatus, String> {
+    let fp = fingerprint.as_deref().map(fp_from).transpose()?;
+    {
+        let mut settings = state.settings.lock().unwrap();
+        settings.input_peer = fingerprint.clone();
+        settings.save(&state.data_dir);
+    }
+    match fp {
+        Some(fp) => ensure_share(&state)?.set_peer(Some(fp)),
+        None => {
+            if let Some(s) = state.share.lock().unwrap().as_ref() {
+                s.switch(Target::Local);
+                s.set_peer(None);
+            }
+        }
+    }
+    Ok(input_status_of(&state))
+}
+
+#[tauri::command]
+fn switch_input(state: State<'_, AppState>, remote: bool) -> Result<(), String> {
+    let share = state
+        .share
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("keyboard and mouse sharing is off")?;
+    share.switch(if remote {
+        Target::Remote
+    } else {
+        Target::Local
+    });
+    Ok(())
+}
+
+/// macOS: show the system prompt that leads to the Accessibility setting.
+#[tauri::command]
+fn request_accessibility() -> bool {
+    da_input::permissions::accessibility_trusted(true)
+}
+
 #[tauri::command]
 async fn discover() -> Result<Vec<(String, String)>, String> {
     let found = discovery::browse(std::time::Duration::from_secs(3))
@@ -302,16 +427,32 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                     state.online.lock().unwrap().remove(&fingerprint.to_hex());
                     Some(UiEvent::PeersChanged)
                 }
+                Event::InputTargetChanged { .. } | Event::InputLink { .. } => {
+                    Some(UiEvent::InputChanged)
+                }
+                Event::InputReceiving { peer, active } => {
+                    *state.receiving_from.lock().unwrap() = active.then_some(peer);
+                    Some(UiEvent::InputChanged)
+                }
                 Event::SessionClosed { .. } | Event::Listening { .. } | Event::Rejected { .. } => {
                     None
                 }
             };
             let n = state.online.lock().unwrap().len();
+            let remote_peer = state
+                .share
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|s| s.status())
+                .filter(|s| s.remote_active)
+                .and_then(|s| s.peer);
             if let Some(tray) = app_e.tray_by_id("main") {
-                let tip = match n {
-                    0 => "DisplayAnything: no devices connected".to_string(),
-                    1 => "DisplayAnything: 1 device connected".to_string(),
-                    n => format!("DisplayAnything: {n} devices connected"),
+                let tip = match (remote_peer, n) {
+                    (Some(p), _) => format!("DisplayAnything: keyboard and mouse on {p}"),
+                    (None, 0) => "DisplayAnything: no devices connected".to_string(),
+                    (None, 1) => "DisplayAnything: 1 device connected".to_string(),
+                    (None, n) => format!("DisplayAnything: {n} devices connected"),
                 };
                 let _ = tray.set_tooltip(Some(tip));
             }
@@ -324,14 +465,39 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open DisplayAnything", true, None::<&str>)?;
+    let switch = MenuItem::with_id(
+        app,
+        "switch",
+        "Switch keyboard and mouse",
+        true,
+        None::<&str>,
+    )?;
+    let home = MenuItem::with_id(
+        app,
+        "home",
+        "Keyboard and mouse to this computer",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &switch, &home, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("DisplayAnything")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, e| match e.id.as_ref() {
             "open" => show_main(app),
+            "switch" | "home" => {
+                let share = app.state::<AppState>().share.lock().unwrap().clone();
+                if let Some(share) = share {
+                    let to_remote = e.id.as_ref() == "switch" && !share.status().remote_active;
+                    share.switch(if to_remote {
+                        Target::Remote
+                    } else {
+                        Target::Local
+                    });
+                }
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -372,6 +538,14 @@ fn main() {
             let trust = TrustStore::load(&data_dir)?;
             let node = Node::new(identity, trust, Config::default())?;
 
+            let settings = Settings::load(&data_dir);
+
+            // Let paired devices with permission drive this computer.
+            match PlatformInputTarget::new(InjectorOptions::default()) {
+                Ok(t) => node.set_input_target(Some(t)),
+                Err(e) => tracing::warn!("receiving input is unavailable: {e:#}"),
+            }
+
             // Start at login by default, once; after that the user's choice stands.
             let marker = data_dir.join(AUTOSTART_SET_MARKER);
             if !marker.exists() {
@@ -387,9 +561,24 @@ fn main() {
                 listen_error: Mutex::new(None),
                 online: Mutex::new(HashSet::new()),
                 pending_code: Mutex::new(None),
+                settings: Mutex::new(settings.clone()),
+                share: Mutex::new(None),
+                input_error: Mutex::new(None),
+                receiving_from: Mutex::new(None),
             });
             build_tray(app)?;
             start_background(app.handle(), node);
+
+            // Resume keyboard and mouse sharing with the saved device.
+            if let Some(fp) = settings.input_peer.as_deref().and_then(|f| fp_from(f).ok()) {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = handle.state::<AppState>();
+                    if let Ok(share) = ensure_share(&state) {
+                        share.set_peer(Some(fp));
+                    }
+                });
+            }
 
             if !std::env::args().any(|a| a == LAUNCHED_AT_LOGIN) {
                 show_main(app.handle());
@@ -414,7 +603,11 @@ fn main() {
             set_permissions,
             get_autostart,
             set_autostart,
-            discover
+            discover,
+            input_status,
+            set_input_peer,
+            switch_input,
+            request_accessibility
         ])
         .run(tauri::generate_context!())
         .expect("error while running DisplayAnything");

@@ -4,7 +4,11 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use da_core::{discovery, AutoConnector, Config, Event, Identity, Node, TrustStore, DEFAULT_PORT};
+use da_core::da_input::{Hotkeys, InjectorOptions};
+use da_core::{
+    discovery, AutoConnector, Config, Event, Fingerprint, Identity, InputShare, Node,
+    PlatformInputTarget, TrustStore, DEFAULT_PORT,
+};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -45,6 +49,13 @@ enum Cmd {
         /// Do not reconnect to saved peers automatically.
         #[arg(long)]
         no_auto_connect: bool,
+        /// Share this computer's keyboard and mouse with this paired device
+        /// (name or fingerprint prefix). Switch with Ctrl+Alt+Right / Left.
+        #[arg(long, value_name = "DEVICE")]
+        share_input_with: Option<String>,
+        /// Refuse keyboard and mouse input from other devices.
+        #[arg(long)]
+        no_input: bool,
     },
     /// Pair with a device by IP. You'll be asked for the code it shows.
     Pair { addr: String },
@@ -97,7 +108,17 @@ async fn main() -> Result<()> {
             bind,
             no_discovery,
             no_auto_connect,
-        } => serve(node, bind, port, no_discovery, no_auto_connect).await?,
+            share_input_with,
+            no_input,
+        } => {
+            let opts = ServeOpts {
+                no_discovery,
+                no_auto_connect,
+                share_input_with,
+                no_input,
+            };
+            serve(node, bind, port, opts).await?
+        }
         Cmd::Pair { addr } => {
             let addr = da_core::parse_addr(&addr)?;
             println!("Asking {addr} to show a pairing code...");
@@ -178,13 +199,20 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn serve(
-    node: Arc<Node>,
-    bind: IpAddr,
-    port: u16,
+struct ServeOpts {
     no_discovery: bool,
     no_auto_connect: bool,
-) -> Result<()> {
+    share_input_with: Option<String>,
+    no_input: bool,
+}
+
+async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, opts: ServeOpts) -> Result<()> {
+    let ServeOpts {
+        no_discovery,
+        no_auto_connect,
+        share_input_with,
+        no_input,
+    } = opts;
     let listener = TcpListener::bind(SocketAddr::new(bind, port))
         .await
         .with_context(|| format!("could not listen on port {port}"))?;
@@ -244,12 +272,50 @@ async fn serve(
                 Event::PeerOffline { name, .. } => {
                     println!("{name} went offline; will reconnect automatically")
                 }
+                Event::InputTargetChanged { peer: Some(p) } => {
+                    println!("Keyboard and mouse now control {p} (Ctrl+Alt+Left to come back)")
+                }
+                Event::InputTargetChanged { peer: None } => {
+                    println!("Keyboard and mouse are back on this computer")
+                }
+                Event::InputLink { peer, connected } => println!(
+                    "Input link to {peer} {}",
+                    if connected {
+                        "ready: press Ctrl+Alt+Right to switch"
+                    } else {
+                        "closed"
+                    }
+                ),
+                Event::InputReceiving { peer, active } => println!(
+                    "{peer} {} this computer's keyboard and mouse",
+                    if active {
+                        "can now drive"
+                    } else {
+                        "stopped driving"
+                    }
+                ),
             }
         }
     });
     if !no_auto_connect {
         tokio::spawn(AutoConnector::new(node.clone(), !no_discovery).run());
     }
+    if !no_input {
+        match PlatformInputTarget::new(InjectorOptions::default()) {
+            Ok(t) => node.set_input_target(Some(t)),
+            Err(e) => eprintln!("Receiving keyboard and mouse input is off: {e:#}"),
+        }
+    }
+    let _share = match share_input_with {
+        Some(who) => {
+            let peer = find_peer(&node, &who)?;
+            let share = InputShare::start(node.clone(), Hotkeys::default())?;
+            share.set_peer(Some(peer));
+            println!("Sharing keyboard and mouse with {who}. Ctrl+Alt+Right switches to it, Ctrl+Alt+Left comes back, Ctrl+Alt+Esc always returns here.");
+            Some(share)
+        }
+        None => None,
+    };
     println!(
         "{} is ready. Fingerprint {}. Press Ctrl+C to stop.",
         node.identity().name,
@@ -258,5 +324,24 @@ async fn serve(
     tokio::select! {
         r = node.clone().serve(listener) => r,
         _ = tokio::signal::ctrl_c() => Ok(()),
+    }
+}
+
+/// Find a paired device by name (case-insensitive) or fingerprint prefix.
+fn find_peer(node: &Node, who: &str) -> Result<Fingerprint> {
+    let needle = who.to_lowercase().replace([':', '-'], "");
+    let trust = node.trust();
+    let matches: Vec<_> = trust
+        .peers()
+        .iter()
+        .filter(|p| {
+            p.name.eq_ignore_ascii_case(who)
+                || (needle.len() >= 4 && p.fingerprint.starts_with(&needle))
+        })
+        .collect();
+    match matches.as_slice() {
+        [p] => p.fingerprint().context("bad fingerprint in trust store"),
+        [] => bail!("no paired device called '{who}'. Run `da-agent peers` to list them."),
+        _ => bail!("'{who}' matches more than one paired device; use its fingerprint"),
     }
 }

@@ -34,8 +34,44 @@ function permToggle(peer, key, label) {
   return l;
 }
 
+let knownPeers = [];
+
+async function loadInput() {
+  const st = await invoke("input_status");
+  const isMac = navigator.userAgent.includes("Mac");
+  $("ax-banner").hidden = st.accessibility_ok;
+  const sel = $("input-peer");
+  const current = st.peer_fingerprint || "";
+  sel.replaceChildren(new Option("Nobody", ""));
+  for (const p of knownPeers) sel.append(new Option(p.name, p.fingerprint));
+  sel.value = current;
+  sel.disabled = !st.supported;
+  $("receiving").hidden = !st.receiving_from;
+  $("receiving").textContent = st.receiving_from ? `${st.receiving_from} is using this computer's keyboard and mouse.` : "";
+  const share = st.share;
+  const live = !!(current && share && share.peer);
+  $("input-live").hidden = !live;
+  if (live) {
+    $("peer-name-btn").textContent = share.peer;
+    $("input-dot").className = "dot" + (share.connected ? " on" : "");
+    $("input-state").textContent = !share.connected
+      ? `Waiting for ${share.peer}…`
+      : share.remote_active ? `Keyboard and mouse are controlling ${share.peer}.` : "Keyboard and mouse are on this computer.";
+    $("use-remote").disabled = !share.connected;
+    // The machine that has input gets the filled button.
+    $("use-remote").className = share.remote_active ? "" : "secondary";
+    $("use-local").className = share.remote_active ? "secondary" : "";
+  }
+  const mod = isMac ? "Ctrl+Option" : "Ctrl+Alt";
+  document.querySelectorAll("#k-mod, .k-mod2").forEach((k) => (k.textContent = mod));
+  $("input-error").textContent = !st.supported
+    ? "Keyboard and mouse sharing works on Windows and macOS."
+    : st.error ? st.error : "";
+}
+
 async function loadPeers() {
   const peers = await invoke("peers");
+  knownPeers = peers;
   const ul = $("peers");
   ul.replaceChildren();
   $("empty").hidden = peers.length > 0;
@@ -72,7 +108,7 @@ async function loadPeers() {
     auto.append(autoCb, "Connect automatically");
     perms.append(
       auto,
-      permToggle(p, "input_takeover", "May use my keyboard and mouse"),
+      permToggle(p, "input_takeover", "May control this computer with its keyboard and mouse"),
       permToggle(p, "display_takeover", "May take over my monitor"),
       permToggle(p, "remote_control", "May control this desktop"),
     );
@@ -164,6 +200,15 @@ $("discover-btn").addEventListener("click", async () => {
   }
 });
 
+$("input-peer").addEventListener("change", async (e) => {
+  try { await invoke("set_input_peer", { fingerprint: e.target.value || null }); }
+  catch (err) { $("input-error").textContent = String(err); }
+  loadInput();
+});
+$("use-remote").addEventListener("click", () => invoke("switch_input", { remote: true }).catch((e) => notice(String(e))));
+$("use-local").addEventListener("click", () => invoke("switch_input", { remote: false }).catch((e) => notice(String(e))));
+$("ax-btn").addEventListener("click", async () => { await invoke("request_accessibility"); setTimeout(loadInput, 1500); });
+
 $("autostart").addEventListener("change", async (e) => {
   try { await invoke("set_autostart", { on: e.target.checked }); }
   catch (err) { e.target.checked = !e.target.checked; notice(String(err)); }
@@ -180,10 +225,13 @@ listen("da-event", ({ payload: ev }) => {
     case "pair_code": showCode(ev); break;
     case "paired": hideCode(); notice(""); loadPeers(); break;
     case "pair_failed": hideCode(); break;
-    case "peers_changed": loadPeers(); break;
+    case "peers_changed": loadPeers().then(loadInput); break;
     case "notice": notice(ev.text); break;
+    case "input_changed": loadInput(); break;
   }
 });
 
 loadStatus();
-loadPeers();
+loadPeers().then(loadInput);
+// Accessibility can be granted in System Settings while we are open.
+setInterval(loadInput, 5000);

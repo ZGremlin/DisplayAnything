@@ -85,6 +85,20 @@ pub enum Event {
         name: String,
         fingerprint: Fingerprint,
     },
+    /// Our keyboard and mouse now drive `peer` (Some) or this computer (None).
+    InputTargetChanged {
+        peer: Option<String>,
+    },
+    /// The input link to the peer we share our keyboard and mouse with.
+    InputLink {
+        peer: String,
+        connected: bool,
+    },
+    /// A peer started or stopped sending input to this machine.
+    InputReceiving {
+        peer: String,
+        active: bool,
+    },
 }
 
 /// Is this address on a local network (private, loopback or link-local)?
@@ -116,6 +130,7 @@ pub struct Node {
     events: broadcast::Sender<Event>,
     acceptor: TlsAcceptor,
     connector: TlsConnector,
+    input_target: Mutex<Option<Arc<dyn crate::input::InputTarget>>>,
 }
 
 impl Node {
@@ -131,11 +146,22 @@ impl Node {
             events,
             acceptor,
             connector,
+            input_target: Mutex::new(None),
         }))
     }
 
     pub fn identity(&self) -> &Identity {
         &self.identity
+    }
+
+    /// Let paired peers (with the input permission) send keyboard and mouse
+    /// input to this machine. Without a target, input requests are refused.
+    pub fn set_input_target(&self, target: Option<Arc<dyn crate::input::InputTarget>>) {
+        *self.input_target.lock().unwrap() = target;
+    }
+
+    pub(crate) fn input_target(&self) -> Option<Arc<dyn crate::input::InputTarget>> {
+        self.input_target.lock().unwrap().clone()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -178,7 +204,7 @@ impl Node {
             });
             return Ok(());
         }
-        let _ = tcp.set_nodelay(true);
+        crate::input::tune_socket(&tcp);
         let mut tls = timeout(HANDSHAKE_TIMEOUT, self.acceptor.accept(tcp))
             .await
             .context("TLS handshake timed out")??;
@@ -207,6 +233,7 @@ impl Node {
         let mut stream = TlsStream::from(tls);
         match intent {
             Intent::Connect => self.serve_session(&mut stream, peer_fp, addr).await,
+            Intent::Input => self.serve_input(stream, peer_fp, addr).await,
             Intent::Pair => {
                 self.respond_pairing(&mut stream, name, peer_fp, exporter, addr)
                     .await
@@ -438,7 +465,7 @@ impl Node {
     // Initiator side
     // ------------------------------------------------------------------
 
-    async fn dial(
+    pub(crate) async fn dial(
         &self,
         addr: SocketAddr,
     ) -> Result<(TlsStream<TcpStream>, Fingerprint, [u8; 32])> {
@@ -449,7 +476,7 @@ impl Node {
             .await
             .with_context(|| format!("timed out connecting to {addr}"))?
             .with_context(|| format!("could not reach {addr}"))?;
-        let _ = tcp.set_nodelay(true);
+        crate::input::tune_socket(&tcp);
         let name = rustls::pki_types::ServerName::try_from(TLS_SERVER_NAME)?;
         let tls = timeout(HANDSHAKE_TIMEOUT, self.connector.connect(name, tcp))
             .await
@@ -586,7 +613,7 @@ fn export_client(conn: &rustls::ClientConnection) -> Result<[u8; 32]> {
     Ok(conn.export_keying_material([0u8; 32], pairing::EXPORTER_LABEL, None)?)
 }
 
-async fn send_err(
+pub(crate) async fn send_err(
     s: &mut (impl tokio::io::AsyncWrite + Unpin),
     code: ErrorCode,
     message: &str,

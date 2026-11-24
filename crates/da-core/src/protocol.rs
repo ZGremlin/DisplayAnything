@@ -19,6 +19,8 @@ pub enum Intent {
     Pair,
     /// Already paired: open a session.
     Connect,
+    /// Already paired: open the input channel (keyboard and mouse).
+    Input,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -74,6 +76,8 @@ pub enum ErrorCode {
     PairingTimeout,
     VersionMismatch,
     Protocol,
+    /// Paired, but this device does not allow that feature for you.
+    NotAllowed,
 }
 
 pub async fn write_msg<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> Result<()> {

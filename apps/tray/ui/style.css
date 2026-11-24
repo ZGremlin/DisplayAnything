@@ -37,3 +37,9 @@ ul { list-style: none; padding: 0; margin: 10px 0 0; }
 .perms { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; color: var(--muted); }
 .perms label, .switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
 .link { background: none; color: var(--muted); padding: 0; text-decoration: underline; }
+select { flex: 1 1 180px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--text); font: inherit; }
+#input-form label { flex-basis: 100%; color: var(--muted); }
+.switch-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+kbd { font: 12px ui-monospace, "SF Mono", Consolas, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
+.notice button { margin-left: 6px; }

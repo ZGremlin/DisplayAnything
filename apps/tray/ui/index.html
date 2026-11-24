@@ -25,6 +25,28 @@
     <p class="muted">Type this code on that device. It expires in <span id="code-ttl"></span> s.</p>
   </section>
 
+  <section class="card" id="input-card">
+    <h2>Keyboard and mouse</h2>
+    <div id="ax-banner" class="notice" hidden>
+      macOS needs the Accessibility permission before DisplayAnything can share or receive keyboard and mouse input.
+      <button type="button" id="ax-btn" class="secondary">Open the permission prompt</button>
+    </div>
+    <p id="receiving" class="muted" hidden></p>
+    <form id="input-form">
+      <label for="input-peer">Share this computer's keyboard and mouse with</label>
+      <select id="input-peer"><option value="">Nobody</option></select>
+    </form>
+    <div id="input-live" hidden>
+      <p><span class="dot" id="input-dot"></span><span id="input-state"></span></p>
+      <div class="switch-row">
+        <button type="button" id="use-local" class="secondary">Use on this computer</button>
+        <button type="button" id="use-remote">Use on <span id="peer-name-btn"></span></button>
+      </div>
+      <p class="muted">Shortcuts: <kbd id="k-mod">Ctrl+Alt</kbd>+→ switch over, <kbd class="k-mod2">Ctrl+Alt</kbd>+← come back, <kbd class="k-mod2">Ctrl+Alt</kbd>+Esc always returns here.</p>
+    </div>
+    <p id="input-error" class="muted"></p>
+  </section>
+
   <section class="card">
     <h2>Pair a new device</h2>
     <form id="pair-form">

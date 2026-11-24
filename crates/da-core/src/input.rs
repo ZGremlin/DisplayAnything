@@ -1,0 +1,312 @@
+//! The input channel: a dedicated connection per controller->target pair
+//! that carries keyboard and mouse events.
+//!
+//! It is its own TLS connection (separate from the control session) with
+//! Nagle off and a high-priority DSCP mark, and each event is written and
+//! flushed the moment it is captured. On a LAN that adds well under a
+//! millisecond. The payload is the compact binary [`Frame`] format.
+
+use crate::identity::Fingerprint;
+use crate::net::{send_err, Event, Node};
+use crate::protocol::{read_msg, write_msg, ErrorCode, Intent, Message};
+use crate::trust::TrustedPeer;
+use crate::PROTOCOL_VERSION;
+use anyhow::{anyhow, bail, Result};
+use da_input::{Frame, InjectorOptions, InputEvent};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::time::timeout;
+use tokio_rustls::TlsStream;
+
+/// Nagle off and DSCP "expedited forwarding" (46), so switches and Wi-Fi
+/// access points that honour it send our packets first.
+pub(crate) fn tune_socket(tcp: &TcpStream) {
+    let _ = tcp.set_nodelay(true);
+    let _ = socket2::SockRef::from(tcp).set_tos(46 << 2);
+}
+
+/// Receives input sent to this machine. Implemented by [`PlatformInputTarget`]
+/// for real use and by test doubles.
+pub trait InputTarget: Send + Sync {
+    /// A peer opened an input channel.
+    fn begin(&self, _peer: &TrustedPeer) {}
+    /// One frame from the peer. A returned frame is sent back (clipboard).
+    fn frame(&self, peer: &TrustedPeer, frame: Frame) -> Option<Frame>;
+    /// The channel closed: release anything still held.
+    fn end(&self, peer: &TrustedPeer);
+}
+
+impl Node {
+    pub(crate) async fn serve_input(
+        &self,
+        mut s: TlsStream<TcpStream>,
+        fp: Fingerprint,
+        addr: SocketAddr,
+    ) -> Result<()> {
+        let Some(peer) = self.trust().get(&fp).cloned() else {
+            return send_err(
+                &mut s,
+                ErrorCode::NotPaired,
+                "this device is not paired with you",
+            )
+            .await;
+        };
+        if !peer.permissions.input_takeover {
+            return send_err(
+                &mut s,
+                ErrorCode::NotAllowed,
+                "this device does not allow you to use its keyboard and mouse",
+            )
+            .await;
+        }
+        let Some(target) = self.input_target() else {
+            return send_err(
+                &mut s,
+                ErrorCode::NotAllowed,
+                "this device cannot receive keyboard and mouse input",
+            )
+            .await;
+        };
+        write_msg(
+            &mut s,
+            &Message::Welcome {
+                name: self.identity().name.clone(),
+                granted: peer.permissions,
+            },
+        )
+        .await?;
+        target.begin(&peer);
+        self.emit(Event::InputReceiving {
+            peer: peer.name.clone(),
+            active: true,
+        });
+        tracing::info!(peer = %peer.name, %addr, "input channel open");
+
+        let result = async {
+            let mut buf: Vec<u8> = Vec::with_capacity(4096);
+            let mut chunk = [0u8; 4096];
+            let mut reply = Vec::new();
+            loop {
+                let n = s.read(&mut chunk).await?;
+                if n == 0 {
+                    return Ok(());
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let mut used = 0;
+                while let Some((frame, len)) = Frame::decode(&buf[used..])? {
+                    used += len;
+                    if let Some(r) = target.frame(&peer, frame) {
+                        reply.clear();
+                        r.encode(&mut reply);
+                        s.write_all(&reply).await?;
+                        s.flush().await?;
+                    }
+                }
+                buf.drain(..used);
+            }
+        }
+        .await;
+        target.end(&peer);
+        self.emit(Event::InputReceiving {
+            peer: peer.name.clone(),
+            active: false,
+        });
+        result
+    }
+
+    /// Open an input channel to a paired peer that allows it.
+    pub async fn open_input(&self, addr: SocketAddr) -> Result<InputLink> {
+        let (mut s, fp, _) = self.dial(addr).await?;
+        let peer = self
+            .trust()
+            .get(&fp)
+            .cloned()
+            .ok_or_else(|| anyhow!("the device at {addr} is not paired with this one"))?;
+        write_msg(
+            &mut s,
+            &Message::Hello {
+                version: PROTOCOL_VERSION,
+                name: self.identity().name.clone(),
+                intent: Intent::Input,
+            },
+        )
+        .await?;
+        match timeout(Duration::from_secs(10), read_msg(&mut s)).await?? {
+            Message::Welcome { .. } => {}
+            Message::Error { message, .. } => bail!("{message}"),
+            other => bail!("unexpected reply {other:?}"),
+        }
+        Ok(InputLink::spawn(s, peer))
+    }
+}
+
+/// Sending half of an input channel (controller side).
+pub struct InputLink {
+    pub peer: TrustedPeer,
+    tx: UnboundedSender<Frame>,
+    clipboard: tokio::sync::Mutex<UnboundedReceiver<String>>,
+    closed: Arc<AtomicBool>,
+}
+
+impl InputLink {
+    fn spawn(s: TlsStream<TcpStream>, peer: TrustedPeer) -> Self {
+        let (mut rd, mut wr) = tokio::io::split(s);
+        let (tx, mut rx) = unbounded_channel::<Frame>();
+        let (clip_tx, clip_rx) = unbounded_channel::<String>();
+        let closed = Arc::new(AtomicBool::new(false));
+
+        let closed_w = closed.clone();
+        tokio::spawn(async move {
+            let mut buf = Vec::with_capacity(64);
+            while let Some(f) = rx.recv().await {
+                buf.clear();
+                f.encode(&mut buf);
+                // Drain whatever else is already queued into the same write.
+                while let Ok(more) = rx.try_recv() {
+                    more.encode(&mut buf);
+                }
+                if wr.write_all(&buf).await.is_err() || wr.flush().await.is_err() {
+                    break;
+                }
+            }
+            closed_w.store(true, Ordering::SeqCst);
+            let _ = wr.shutdown().await;
+        });
+
+        let closed_r = closed.clone();
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match rd.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+                let mut used = 0;
+                loop {
+                    match Frame::decode(&buf[used..]) {
+                        Ok(Some((Frame::ClipboardText(t), len))) => {
+                            used += len;
+                            let _ = clip_tx.send(t);
+                        }
+                        Ok(Some((_, len))) => used += len,
+                        Ok(None) => break,
+                        Err(_) => {
+                            closed_r.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                    }
+                }
+                buf.drain(..used);
+            }
+            closed_r.store(true, Ordering::SeqCst);
+        });
+
+        InputLink {
+            peer,
+            tx,
+            clipboard: tokio::sync::Mutex::new(clip_rx),
+            closed,
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst) || self.tx.is_closed()
+    }
+
+    /// Queue a frame; it is written immediately. Returns false if closed.
+    pub fn send(&self, f: Frame) -> bool {
+        !self.is_closed() && self.tx.send(f).is_ok()
+    }
+
+    pub fn send_event(&self, e: InputEvent) -> bool {
+        self.send(Frame::Input(e))
+    }
+
+    /// Ask the peer for its clipboard text.
+    pub async fn request_clipboard(&self, wait: Duration) -> Option<String> {
+        let mut rx = self.clipboard.lock().await;
+        while rx.try_recv().is_ok() {} // drop stale replies
+        if !self.send(Frame::ClipboardRequest) {
+            return None;
+        }
+        timeout(wait, rx.recv()).await.ok().flatten()
+    }
+}
+
+impl Drop for InputLink {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Frame::Input(InputEvent::ReleaseAll));
+    }
+}
+
+/// Replays received input on this machine with the OS injector.
+///
+/// The injector lives on its own thread (macOS event sources must stay on
+/// one thread); frames reach it through a channel.
+pub struct PlatformInputTarget {
+    tx: std::sync::mpsc::Sender<Cmd>,
+}
+
+enum Cmd {
+    Event(InputEvent),
+    SetClipboard(String),
+}
+
+impl PlatformInputTarget {
+    pub fn new(opts: InjectorOptions) -> Result<Arc<Self>> {
+        let (tx, rx) = std::sync::mpsc::channel::<Cmd>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+        std::thread::Builder::new()
+            .name("da-input-inject".into())
+            .spawn(move || {
+                let mut injector = match da_input::Injector::new(opts) {
+                    Ok(i) => {
+                        let _ = ready_tx.send(Ok(()));
+                        i
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
+                while let Ok(cmd) = rx.recv() {
+                    match cmd {
+                        Cmd::Event(e) => injector.inject(&e),
+                        Cmd::SetClipboard(t) => da_input::clipboard::set_text(&t),
+                    }
+                }
+            })?;
+        ready_rx
+            .recv()
+            .map_err(|_| anyhow!("input thread exited"))??;
+        Ok(Arc::new(PlatformInputTarget { tx }))
+    }
+}
+
+impl InputTarget for PlatformInputTarget {
+    fn frame(&self, _peer: &TrustedPeer, frame: Frame) -> Option<Frame> {
+        match frame {
+            Frame::Input(e) => {
+                let _ = self.tx.send(Cmd::Event(e));
+                None
+            }
+            Frame::ClipboardText(t) => {
+                let _ = self.tx.send(Cmd::SetClipboard(t));
+                None
+            }
+            Frame::ClipboardRequest => Some(Frame::ClipboardText(
+                da_input::clipboard::get_text().unwrap_or_default(),
+            )),
+        }
+    }
+
+    fn end(&self, _peer: &TrustedPeer) {
+        let _ = self.tx.send(Cmd::Event(InputEvent::ReleaseAll));
+    }
+}
