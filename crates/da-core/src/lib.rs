@@ -2,6 +2,7 @@
 //! LAN connections. Later milestones add the video and input channels on top
 //! of the session established here.
 
+pub mod autoconnect;
 pub mod discovery;
 pub mod identity;
 pub mod net;
@@ -10,6 +11,7 @@ pub mod protocol;
 pub mod tls;
 pub mod trust;
 
+pub use autoconnect::AutoConnector;
 pub use identity::{Fingerprint, Identity};
 pub use net::{Config, Event, Node, Session};
 pub use trust::{Permissions, TrustStore, TrustedPeer};

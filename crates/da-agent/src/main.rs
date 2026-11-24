@@ -4,7 +4,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use da_core::{discovery, Config, Event, Identity, Node, TrustStore, DEFAULT_PORT};
+use da_core::{discovery, AutoConnector, Config, Event, Identity, Node, TrustStore, DEFAULT_PORT};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -42,6 +42,9 @@ enum Cmd {
         /// Do not advertise this device over mDNS.
         #[arg(long)]
         no_discovery: bool,
+        /// Do not reconnect to saved peers automatically.
+        #[arg(long)]
+        no_auto_connect: bool,
     },
     /// Pair with a device by IP. You'll be asked for the code it shows.
     Pair { addr: String },
@@ -103,7 +106,20 @@ async fn main() -> Result<()> {
         Some(d) => d,
         None => default_data_dir()?,
     };
-    let name = cli.name.unwrap_or_else(default_name);
+    // The device name is remembered, so `--name` only needs to be given once.
+    let name_file = data_dir.join("device_name.txt");
+    let name = match cli.name {
+        Some(n) => {
+            std::fs::create_dir_all(&data_dir)?;
+            std::fs::write(&name_file, &n)?;
+            n
+        }
+        None => std::fs::read_to_string(&name_file)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(default_name),
+    };
     let identity = Identity::load_or_create(&data_dir, &name)?;
     let trust = TrustStore::load(&data_dir)?;
     let config = Config {
@@ -123,7 +139,8 @@ async fn main() -> Result<()> {
             port,
             bind,
             no_discovery,
-        } => serve(node, bind, port, no_discovery).await?,
+            no_auto_connect,
+        } => serve(node, bind, port, no_discovery, no_auto_connect).await?,
         Cmd::Pair { addr } => {
             let addr = parse_addr(&addr)?;
             println!("Asking {addr} to show a pairing code...");
@@ -171,10 +188,11 @@ async fn main() -> Result<()> {
                     .unwrap_or_else(|| "?".into());
                 let perms = &p.permissions;
                 println!(
-                    "{:<24} {}  last seen {:<16} remote-control:{} display:{} input:{}",
+                    "{:<24} {}  last seen {:<16} auto-connect:{} remote-control:{} display:{} input:{}",
                     p.name,
                     fp,
                     p.last_addr.as_deref().unwrap_or("-"),
+                    p.auto_connect,
                     perms.remote_control,
                     perms.display_takeover,
                     perms.input_takeover
@@ -203,7 +221,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, no_discovery: bool) -> Result<()> {
+async fn serve(
+    node: Arc<Node>,
+    bind: IpAddr,
+    port: u16,
+    no_discovery: bool,
+    no_auto_connect: bool,
+) -> Result<()> {
     let listener = TcpListener::bind(SocketAddr::new(bind, port))
         .await
         .with_context(|| format!("could not listen on port {port}"))?;
@@ -257,9 +281,18 @@ async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, no_discovery: bool) -> 
                 }
                 Event::SessionClosed { name, .. } => println!("Session closed: {name}"),
                 Event::Rejected { addr, reason } => println!("Rejected {}: {reason}", addr.ip()),
+                Event::PeerOnline { name, addr, .. } => {
+                    println!("{name} is online at {}", addr.ip())
+                }
+                Event::PeerOffline { name, .. } => {
+                    println!("{name} went offline; will reconnect automatically")
+                }
             }
         }
     });
+    if !no_auto_connect {
+        tokio::spawn(AutoConnector::new(node.clone(), !no_discovery).run());
+    }
     println!(
         "{} is ready. Fingerprint {}. Press Ctrl+C to stop.",
         node.identity().name,

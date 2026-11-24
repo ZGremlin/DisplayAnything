@@ -74,6 +74,17 @@ pub enum Event {
         addr: SocketAddr,
         reason: String,
     },
+    /// A saved peer is reachable and we hold a session with it.
+    PeerOnline {
+        name: String,
+        fingerprint: Fingerprint,
+        addr: SocketAddr,
+    },
+    /// A saved peer we were connected to went away; retrying in the background.
+    PeerOffline {
+        name: String,
+        fingerprint: Fingerprint,
+    },
 }
 
 /// Is this address on a local network (private, loopback or link-local)?
@@ -135,7 +146,7 @@ impl Node {
         self.trust.lock().expect("trust store lock poisoned")
     }
 
-    fn emit(&self, e: Event) {
+    pub(crate) fn emit(&self, e: Event) {
         let _ = self.events.send(e);
     }
 
@@ -222,7 +233,8 @@ impl Node {
             )
             .await;
         };
-        self.trust().note_address(&fp, addr.ip().to_string())?;
+        self.trust()
+            .note_address(&fp, addr.ip().to_string(), None)?;
         write_msg(
             s,
             &Message::Welcome {
@@ -386,6 +398,8 @@ impl Node {
             permissions: granted,
             paired_at_unix: now_unix(),
             last_addr: Some(addr.ip().to_string()),
+            port: None,
+            auto_connect: true,
         });
         if let Err(e) = stored {
             return PairOutcome::NoGuess(e.context("saving trusted peer"));
@@ -512,6 +526,8 @@ impl Node {
             permissions: Permissions::default(),
             paired_at_unix: now_unix(),
             last_addr: Some(addr.ip().to_string()),
+            port: Some(addr.port()),
+            auto_connect: true,
         };
         self.trust().upsert(peer.clone())?;
         let _ = write_msg(&mut s, &Message::Bye).await;
@@ -539,7 +555,8 @@ impl Node {
         .await?;
         match timeout(HANDSHAKE_TIMEOUT, read_msg(&mut s)).await?? {
             Message::Welcome { granted, .. } => {
-                self.trust().note_address(&fp, addr.ip().to_string())?;
+                self.trust()
+                    .note_address(&fp, addr.ip().to_string(), Some(addr.port()))?;
                 Ok(Session {
                     peer,
                     granted_to_us: granted,

@@ -35,6 +35,16 @@ pub struct TrustedPeer {
     pub paired_at_unix: u64,
     #[serde(default)]
     pub last_addr: Option<String>,
+    /// Port the peer listens on, when we have dialled it.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Reconnect to this peer automatically whenever both are running.
+    #[serde(default = "default_true")]
+    pub auto_connect: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl TrustedPeer {
@@ -121,15 +131,34 @@ impl TrustStore {
         Ok(true)
     }
 
-    pub fn note_address(&mut self, fp: &Fingerprint, addr: String) -> Result<()> {
+    /// Remember where a peer was last reached. `port` is only known when we
+    /// dialled the peer (an incoming connection comes from an ephemeral port).
+    pub fn note_address(
+        &mut self,
+        fp: &Fingerprint,
+        addr: String,
+        port: Option<u16>,
+    ) -> Result<()> {
         let hex = fp.to_hex();
         if let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == hex) {
-            if p.last_addr.as_deref() != Some(addr.as_str()) {
+            let new_port = port.or(p.port);
+            if p.last_addr.as_deref() != Some(addr.as_str()) || p.port != new_port {
                 p.last_addr = Some(addr);
+                p.port = new_port;
                 self.save()?;
             }
         }
         Ok(())
+    }
+
+    pub fn set_auto_connect(&mut self, fp: &Fingerprint, on: bool) -> Result<bool> {
+        let hex = fp.to_hex();
+        let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == hex) else {
+            return Ok(false);
+        };
+        p.auto_connect = on;
+        self.save()?;
+        Ok(true)
     }
 
     fn save(&self) -> Result<()> {
@@ -162,12 +191,34 @@ mod tests {
                 permissions: Permissions::default(),
                 paired_at_unix: 1,
                 last_addr: None,
+                port: None,
+                auto_connect: true,
             })
             .unwrap();
         }
         let mut t = TrustStore::load(dir.path()).unwrap();
         assert!(t.get(&fp).is_some());
+        t.note_address(&fp, "192.168.1.9".into(), Some(47800))
+            .unwrap();
+        let reloaded = TrustStore::load(dir.path()).unwrap();
+        let p = reloaded.get(&fp).unwrap();
+        assert_eq!(
+            (p.last_addr.as_deref(), p.port),
+            (Some("192.168.1.9"), Some(47800))
+        );
         assert_eq!(t.remove("MAC").unwrap(), 1);
         assert!(TrustStore::load(dir.path()).unwrap().get(&fp).is_none());
     }
+}
+
+#[test]
+fn old_files_without_new_fields_still_load() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(TRUST_FILE),
+        r#"{"peers":[{"name":"mac","fingerprint":"aa","permissions":{"remote_control":false,"display_takeover":true,"input_takeover":true},"paired_at_unix":1}]}"#,
+    )
+    .unwrap();
+    let t = TrustStore::load(dir.path()).unwrap();
+    assert!(t.peers()[0].auto_connect);
 }

@@ -167,3 +167,57 @@ fn lan_filter() {
         assert!(!is_lan(bad.parse().unwrap()), "{bad} should not be LAN");
     }
 }
+
+#[tokio::test]
+async fn saved_peer_reconnects_automatically_after_restart() {
+    use da_core::AutoConnector;
+    let dir_mac = tempfile::tempdir().unwrap();
+    let dir_pc = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mac_addr = listener.local_addr().unwrap();
+
+    // First run: pair.
+    let mac_id = Identity::load_or_create(dir_mac.path(), "mac").unwrap();
+    let mac = Node::new(
+        mac_id,
+        TrustStore::load(dir_mac.path()).unwrap(),
+        Config::default(),
+    )
+    .unwrap();
+    let mac_task = tokio::spawn(mac.clone().serve(listener));
+    {
+        let pc = Node::new(
+            Identity::load_or_create(dir_pc.path(), "pc").unwrap(),
+            TrustStore::load(dir_pc.path()).unwrap(),
+            Config::default(),
+        )
+        .unwrap();
+        let mut rx = mac.subscribe();
+        pc.pair(mac_addr, || async move { Ok(next_code(&mut rx).await) })
+            .await
+            .unwrap();
+    }
+
+    // "Reboot" the PC: a fresh node loaded from disk reconnects on its own.
+    let pc = Node::new(
+        Identity::load_or_create(dir_pc.path(), "pc").unwrap(),
+        TrustStore::load(dir_pc.path()).unwrap(),
+        Config::default(),
+    )
+    .unwrap();
+    let mut pc_events = pc.subscribe();
+    let auto = AutoConnector::new(pc.clone(), false);
+    let auto_task = tokio::spawn(auto.run());
+    let online = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(Event::PeerOnline { name, addr, .. }) = pc_events.recv().await {
+                return (name, addr);
+            }
+        }
+    })
+    .await
+    .expect("saved peer came online without user action");
+    assert_eq!(online, ("mac".to_string(), mac_addr));
+    auto_task.abort();
+    mac_task.abort();
+}
