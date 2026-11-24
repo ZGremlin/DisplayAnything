@@ -1,0 +1,39 @@
+[hidden] { display: none !important; }
+:root {
+  --bg: #f7f7f8; --card: #ffffff; --text: #18181b; --muted: #6b7280; --line: #e5e7eb;
+  --accent: #2563eb; --accent-text: #ffffff; --good: #16a34a; --warn-bg: #fef3c7; --warn: #92400e;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18181b; --card: #232327; --text: #f4f4f5; --muted: #a1a1aa; --line: #3f3f46;
+    --accent: #3b82f6; --good: #22c55e; --warn-bg: #422006; --warn: #fcd34d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 20px; background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+.muted { color: var(--muted); margin: 2px 0; }
+.card, .banner { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+.banner { border-color: var(--accent); }
+.code { font: 600 34px/1.2 ui-monospace, "SF Mono", Consolas, monospace; letter-spacing: 4px; margin: 8px 0; }
+.notice { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; }
+form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+form p { flex-basis: 100%; margin: 8px 0 0; }
+input[type=text], input:not([type]) { flex: 1 1 180px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--text); font: inherit; }
+button { padding: 8px 14px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-text); font: inherit; cursor: pointer; }
+button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+button:disabled { opacity: .5; cursor: default; }
+ul { list-style: none; padding: 0; margin: 10px 0 0; }
+.found li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.peers li { padding: 12px 0; border-top: 1px solid var(--line); }
+.peer-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+.dot.on { background: var(--good); }
+.perms { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; color: var(--muted); }
+.perms label, .switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+.link { background: none; color: var(--muted); padding: 0; text-decoration: underline; }
