@@ -35,12 +35,46 @@ jobs:
         run: cargo test --workspace
       - name: Build release binaries
         run: cargo build --workspace --release
+
+  package:
+    name: package ${{ matrix.os }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bundles: nsis
+          - os: macos-latest
+            bundles: app
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Build installer
+        working-directory: apps/tray/src-tauri
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
+      - name: Build agent
+        run: cargo build --release -p da-agent
+      - name: Collect (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir out
+          cp target/release/bundle/nsis/*.exe out/
+          cp target/release/da-agent.exe out/
+      - name: Collect (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir out
+          # ditto keeps the app's permissions and symlinks intact
+          ditto -c -k --keepParent target/release/bundle/macos/DisplayAnything.app out/DisplayAnything-macOS.zip
+          # zip strips the executable bit, so ship the CLI in a tarball
+          tar -czf out/da-agent-macos.tar.gz -C target/release da-agent
       - uses: actions/upload-artifact@v4
         with:
-          name: displayanything-${{ runner.os }}
-          path: |
-            target/release/da-agent
-            target/release/da-agent.exe
-            target/release/da-tray
-            target/release/da-tray.exe
-          if-no-files-found: ignore
+          name: DisplayAnything-${{ runner.os }}
+          path: out/*
