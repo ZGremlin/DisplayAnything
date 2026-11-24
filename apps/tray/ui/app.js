@@ -34,6 +34,50 @@ function permToggle(peer, key, label) {
   return l;
 }
 
+// Swap `el` for a text box to edit a name in place. Enter or clicking away
+// saves, Esc cancels. `save` returns a promise; on failure the box stays open.
+function editInline(el, current, placeholder, save) {
+  if (el.dataset.editing) return;
+  el.dataset.editing = "1";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "inline-edit";
+  input.value = current;
+  input.placeholder = placeholder;
+  input.maxLength = 63;
+  el.hidden = true;
+  el.after(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    if (commit && input.value.trim() !== current) {
+      try { await save(input.value.trim()); }
+      catch (e) { notice(String(e)); input.focus(); return; }
+    }
+    done = true;
+    notice("");
+    input.remove();
+    el.hidden = false;
+    delete el.dataset.editing;
+    if (peersStale) { peersStale = false; loadPeers().then(loadInput); }
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+function renameSelf() {
+  const h = $("name");
+  editInline(h, h.textContent, "Name for this computer", async (name) => {
+    const s = await invoke("rename_device", { name });
+    h.textContent = s.name;
+  });
+}
+
 let knownPeers = [];
 
 async function loadInput() {
@@ -69,7 +113,11 @@ async function loadInput() {
     : st.error ? st.error : "";
 }
 
+let peersStale = false;
+
 async function loadPeers() {
+  // Don't redraw the list under someone typing a new name; catch up after.
+  if (document.querySelector("#peers .inline-edit")) { peersStale = true; return; }
   const peers = await invoke("peers");
   knownPeers = peers;
   const ul = $("peers");
@@ -95,7 +143,21 @@ async function loadPeers() {
       if (forget.dataset.armed) { await invoke("unpair", { fingerprint: p.fingerprint }); loadPeers(); }
       else { forget.dataset.armed = "1"; forget.textContent = "Click again to forget"; }
     });
-    head.append(title, forget);
+    const rename = document.createElement("button");
+    rename.className = "link";
+    rename.textContent = "Rename";
+    rename.title = p.custom_name
+      ? "Clear the name to go back to the name this device gives itself"
+      : "Choose what this device is called on this computer";
+    rename.addEventListener("click", () =>
+      editInline(name, p.name, "Leave empty to use its own name", async (newName) => {
+        await invoke("rename_peer", { fingerprint: p.fingerprint, name: newName });
+        peersStale = true; // redraw once the text box closes
+      }));
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    actions.append(rename, forget);
+    head.append(title, actions);
 
     const perms = document.createElement("div");
     perms.className = "perms";
@@ -207,6 +269,8 @@ $("input-peer").addEventListener("change", async (e) => {
 });
 $("use-remote").addEventListener("click", () => invoke("switch_input", { remote: true }).catch((e) => notice(String(e))));
 $("use-local").addEventListener("click", () => invoke("switch_input", { remote: false }).catch((e) => notice(String(e))));
+$("rename-btn").addEventListener("click", renameSelf);
+$("name").addEventListener("click", renameSelf);
 $("ax-btn").addEventListener("click", async () => { await invoke("request_accessibility"); setTimeout(loadInput, 1500); });
 
 $("autostart").addEventListener("change", async (e) => {

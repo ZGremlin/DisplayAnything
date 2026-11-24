@@ -75,7 +75,7 @@ impl Node {
         write_msg(
             &mut s,
             &Message::Welcome {
-                name: self.identity().name.clone(),
+                name: self.name(),
                 granted: peer.permissions,
             },
         )
@@ -131,7 +131,7 @@ impl Node {
             &mut s,
             &Message::Hello {
                 version: PROTOCOL_VERSION,
-                name: self.identity().name.clone(),
+                name: self.name(),
                 intent: Intent::Input,
             },
         )

@@ -57,6 +57,8 @@ struct AppState {
     share: Mutex<Option<Arc<InputShare>>>,
     input_error: Mutex<Option<String>>,
     receiving_from: Mutex<Option<String>>,
+    /// mDNS advertisement; replaced when this device is renamed.
+    advertiser: Mutex<Option<discovery::Advertiser>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -89,6 +91,7 @@ struct PeerView {
     auto_connect: bool,
     online: bool,
     permissions: Permissions,
+    custom_name: bool,
 }
 
 /// Events forwarded to the window.
@@ -134,7 +137,7 @@ fn show_main(app: &AppHandle) {
 fn status(state: State<'_, AppState>) -> Status {
     let id = state.node.identity();
     Status {
-        name: id.name.clone(),
+        name: state.node.name(),
         fingerprint: id.fingerprint().short(),
         port: DEFAULT_PORT,
         listen_error: state.listen_error.lock().unwrap().clone(),
@@ -158,10 +161,71 @@ fn peers(state: State<'_, AppState>) -> Vec<PeerView> {
             auto_connect: p.auto_connect,
             online: online.contains(&p.fingerprint),
             permissions: p.permissions,
+            custom_name: p.custom_name,
         })
         .collect();
     v.sort_by_key(|p| p.name.to_lowercase());
     v
+}
+
+const MAX_NAME_LEN: usize = 63;
+
+fn clean_name(name: &str) -> Result<String, String> {
+    let n: String = name.trim().chars().filter(|c| !c.is_control()).collect();
+    if n.chars().count() > MAX_NAME_LEN {
+        return Err(format!(
+            "Keep the name to {MAX_NAME_LEN} characters or fewer."
+        ));
+    }
+    Ok(n)
+}
+
+fn advertise(node: &Node) -> Option<discovery::Advertiser> {
+    match discovery::advertise(&node.name(), DEFAULT_PORT, &node.identity().fingerprint()) {
+        Ok(adv) => Some(adv),
+        Err(e) => {
+            tracing::warn!("mDNS unavailable: {e:#}");
+            None
+        }
+    }
+}
+
+/// Rename this device. Saved for next time, re-announced on the network,
+/// and picked up by connected devices within a few seconds.
+#[tauri::command]
+fn rename_device(state: State<'_, AppState>, name: String) -> Result<Status, String> {
+    let name = clean_name(&name)?;
+    if name.is_empty() {
+        return Err("The name can't be empty.".into());
+    }
+    da_core::device_name(&state.data_dir, Some(&name)).map_err(|e| format!("{e:#}"))?;
+    state.node.set_name(&name);
+    {
+        let mut adv = state.advertiser.lock().unwrap();
+        adv.take(); // withdraw the old name before announcing the new one
+        *adv = advertise(&state.node);
+    }
+    Ok(status(state))
+}
+
+/// Give a saved device a name on this computer. An empty name goes back to
+/// the name that device gives itself.
+#[tauri::command]
+fn rename_peer(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    fingerprint: String,
+    name: String,
+) -> Result<(), String> {
+    let fp = fp_from(&fingerprint)?;
+    let name = clean_name(&name)?;
+    let name = (!name.is_empty()).then_some(name.as_str());
+    state
+        .node
+        .rename_peer(&fp, name)
+        .map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("da-event", UiEvent::PeersChanged);
+    Ok(())
 }
 
 /// Pair with a device by IP. Resolves when pairing finishes; meanwhile the
@@ -382,17 +446,8 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
         }
     });
 
-    // mDNS advertisement lives as long as the app.
-    match discovery::advertise(
-        &node.identity().name,
-        DEFAULT_PORT,
-        &node.identity().fingerprint(),
-    ) {
-        Ok(adv) => {
-            app.manage(adv);
-        }
-        Err(e) => tracing::warn!("mDNS unavailable: {e:#}"),
-    }
+    // mDNS advertisement lives as long as the app (replaced on rename).
+    *app.state::<AppState>().advertiser.lock().unwrap() = advertise(&node);
 
     // Reconnect to saved peers.
     tauri::async_runtime::spawn(AutoConnector::new(node.clone(), true).run());
@@ -451,6 +506,7 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                     *state.receiving_from.lock().unwrap() = active.then_some(peer);
                     Some(UiEvent::InputChanged)
                 }
+                Event::PeerRenamed { .. } => Some(UiEvent::PeersChanged),
                 Event::SessionClosed { .. } | Event::Listening { .. } | Event::Rejected { .. } => {
                     None
                 }
@@ -618,6 +674,7 @@ fn main() {
                 share: Mutex::new(None),
                 input_error: Mutex::new(None),
                 receiving_from: Mutex::new(None),
+                advertiser: Mutex::new(None),
             });
             build_tray(app)?;
             start_background(app.handle(), node);
@@ -660,7 +717,9 @@ fn main() {
             input_status,
             set_input_peer,
             switch_input,
-            request_accessibility
+            request_accessibility,
+            rename_device,
+            rename_peer
         ])
         .run(tauri::generate_context!())
         .expect("error while running DisplayAnything");

@@ -41,6 +41,10 @@ pub struct TrustedPeer {
     /// Reconnect to this peer automatically whenever both are running.
     #[serde(default = "default_true")]
     pub auto_connect: bool,
+    /// The user gave this peer its own name here, so names the peer
+    /// announces for itself are not applied.
+    #[serde(default)]
+    pub custom_name: bool,
 }
 
 fn default_true() -> bool {
@@ -131,6 +135,40 @@ impl TrustStore {
         Ok(true)
     }
 
+    /// Apply a name the peer announced for itself, unless the user renamed
+    /// it here. Returns whether the stored name changed.
+    pub fn note_announced_name(&mut self, fp: &Fingerprint, announced: &str) -> Result<bool> {
+        let announced = announced.trim();
+        let hex = fp.to_hex();
+        let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == hex) else {
+            return Ok(false);
+        };
+        if p.custom_name || announced.is_empty() || p.name == announced {
+            return Ok(false);
+        }
+        p.name = announced.to_string();
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Give a peer a custom name, or with `None`/empty, stop using one (the
+    /// peer's own name is applied again on the next connection).
+    pub fn rename(&mut self, fp: &Fingerprint, name: Option<&str>) -> Result<bool> {
+        let hex = fp.to_hex();
+        let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == hex) else {
+            return Ok(false);
+        };
+        match name.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => {
+                p.name = n.to_string();
+                p.custom_name = true;
+            }
+            None => p.custom_name = false,
+        }
+        self.save()?;
+        Ok(true)
+    }
+
     /// Remember where a peer was last reached. `port` is only known when we
     /// dialled the peer (an incoming connection comes from an ephemeral port).
     pub fn note_address(
@@ -193,6 +231,7 @@ mod tests {
                 last_addr: None,
                 port: None,
                 auto_connect: true,
+                custom_name: false,
             })
             .unwrap();
         }

@@ -43,6 +43,8 @@ Both machines must be on the same network, and TCP port 47800 must be allowed th
 2. On machine A, type machine B's IP address and click **Pair**. Machine B shows a 6-digit code; type it on A.
 3. That's it. From now on the two connect automatically whenever both are running, including after a reboot or an IP change.
 
+**Names:** click this computer's name at the top of the window to rename it; connected devices pick up the new name within a few seconds. **Rename** next to a saved device sets what it's called on this computer only (clear it to go back to that device's own name). CLI: `da-agent --name "Studio Mac" serve`.
+
 With the CLI: `da-agent serve` on B, then `da-agent pair 192.168.1.20` on A, then `da-agent connect 192.168.1.20` to check the link and latency.
 
 ## Keyboard and mouse sharing
@@ -65,7 +67,7 @@ Known limits: Windows won't let a normal app send input to admin windows or UAC 
 
 ## macOS notes
 
-No driver or paid Apple account is needed. Keyboard and mouse sharing needs the **Accessibility** permission (System Settings › Privacy & Security › Accessibility); the app shows a button that opens the prompt. Screen sharing (later) will also need Screen Recording.
+No driver or paid Apple account is needed. After installing or updating a build, run `bash scripts/macos-setup.sh ~/Downloads/DisplayAnything-macOS.zip`: it installs the app, clears the quarantine flag, re-signs it locally and resets the permission grants that a new build invalidates, then opens the prompt. Keyboard and mouse sharing needs the **Accessibility** permission (System Settings › Privacy & Security › Accessibility); the app shows a button that opens the prompt. Screen sharing (later) will also need Screen Recording.
 
 ## Security
 

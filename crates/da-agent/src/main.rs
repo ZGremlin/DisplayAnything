@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Id => {
-            println!("Name:        {}", node.identity().name);
+            println!("Name:        {}", node.name());
             println!("Fingerprint: {}", node.identity().fingerprint().short());
             println!("Full:        {}", node.identity().fingerprint());
             println!("Data dir:    {}", data_dir.display());
@@ -219,7 +219,7 @@ async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, opts: ServeOpts) -> Res
     let _adv = if no_discovery {
         None
     } else {
-        match discovery::advertise(&node.identity().name, port, &node.identity().fingerprint()) {
+        match discovery::advertise(&node.name(), port, &node.identity().fingerprint()) {
             Ok(a) => Some(a),
             Err(e) => {
                 eprintln!("mDNS discovery unavailable ({e:#}); pairing by IP still works.");
@@ -271,6 +271,9 @@ async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, opts: ServeOpts) -> Res
                 }
                 Event::PeerOffline { name, .. } => {
                     println!("{name} went offline; will reconnect automatically")
+                }
+                Event::PeerRenamed { name, fingerprint } => {
+                    println!("{} is now called {name}", fingerprint.short())
                 }
                 Event::InputTargetChanged { peer: Some(p) } => {
                     println!("Keyboard and mouse now control {p} (Ctrl+Alt+Left to come back)")
@@ -326,7 +329,7 @@ async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, opts: ServeOpts) -> Res
     };
     println!(
         "{} is ready. Fingerprint {}. Press Ctrl+C to stop.",
-        node.identity().name,
+        node.name(),
         node.identity().fingerprint().short()
     );
     tokio::select! {

@@ -43,3 +43,8 @@ select { flex: 1 1 180px; padding: 8px 10px; border: 1px solid var(--line); bord
 .switch-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
 kbd { font: 12px ui-monospace, "SF Mono", Consolas, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
 .notice button { margin-left: 6px; }
+
+.name-row { display: flex; align-items: baseline; gap: 8px; }
+#name { cursor: text; }
+.actions { display: flex; gap: 12px; flex-shrink: 0; }
+.inline-edit { font: inherit; font-size: 16px; padding: 4px 8px; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--text); min-width: 0; width: 100%; max-width: 280px; }
