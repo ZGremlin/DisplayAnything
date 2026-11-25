@@ -1,7 +1,9 @@
 //! macOS capture with a Quartz event tap. Needs the Accessibility permission.
 //!
-//! While input is remote the cursor is detached from the mouse and hidden,
-//! and the raw deltas Quartz reports are forwarded.
+//! While input is remote the cursor is detached from the mouse, hidden and
+//! held in the middle of the main display, and the raw deltas Quartz
+//! reports are forwarded. Detaching alone isn't reliable (macOS can
+//! re-attach it, e.g. after an edge crossing), so any drift is undone.
 
 use super::Shared;
 use crate::keymap;
@@ -15,11 +17,32 @@ use core_graphics::event::{
     CGEvent, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
     EventField,
 };
-use std::sync::Arc;
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use core_graphics::geometry::CGPoint;
+use std::sync::{Arc, Mutex};
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
+    fn CGWarpMouseCursorPosition(p: CGPoint) -> i32;
+}
+
+/// While remote: (where the pointer was before, where it is held).
+type Point = (f64, f64);
+static PARK: Mutex<Option<(Point, Point)>> = Mutex::new(None);
+
+fn cursor_now() -> Option<(f64, f64)> {
+    let src = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+    let p = CGEvent::new(src).ok()?.location();
+    Some((p.x, p.y))
+}
+
+/// Hold the pointer still at `p` while it is detached from the mouse.
+fn hold_at(p: (f64, f64)) {
+    unsafe {
+        CGWarpMouseCursorPosition(CGPoint::new(p.0, p.1));
+        CGAssociateMouseAndMouseCursorPosition(0);
+    }
 }
 
 pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
@@ -60,10 +83,12 @@ pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
                 events,
                 move |_proxy, ty, event| {
                     if handle(&shared, ty, event) {
-                        None
-                    } else {
-                        Some(event.to_owned())
+                        // core-graphics passes the original event through
+                        // when the callback returns None, so blank it out:
+                        // a Null event is dropped by macOS.
+                        event.set_type(CGEventType::Null);
                     }
+                    None
                 },
             );
             let tap = match tap {
@@ -114,12 +139,23 @@ pub(super) fn on_switch(t: Target, _held: Vec<u16>) {
     unsafe {
         match t {
             Target::Remote => {
-                CGAssociateMouseAndMouseCursorPosition(0);
+                let b = display.bounds();
+                let centre = (
+                    b.origin.x + b.size.width / 2.0,
+                    b.origin.y + b.size.height / 2.0,
+                );
+                let saved = cursor_now().unwrap_or(centre);
+                *PARK.lock().unwrap() = Some((saved, centre));
+                hold_at(centre);
                 let _ = display.hide_cursor();
             }
             Target::Local => {
+                let park = PARK.lock().unwrap().take();
                 if let Some((x, y)) = super::take_return_pos() {
                     // Came back over the edge: appear where we crossed.
+                    crate::inject::warp(x, y);
+                } else if let Some(((x, y), _)) = park {
+                    // Came back by shortcut: appear where we left.
                     crate::inject::warp(x, y);
                 }
                 CGAssociateMouseAndMouseCursorPosition(1);
@@ -188,6 +224,14 @@ fn handle(shared: &Shared, ty: CGEventType, e: &CGEvent) -> bool {
             if dx != 0 || dy != 0 {
                 for m in split_move(dx, dy) {
                     shared.mouse(m);
+                }
+            }
+            // If macOS let the pointer move anyway, put it back.
+            let park = PARK.lock().unwrap().map(|p| p.1);
+            if let Some(c) = park {
+                let p = e.location();
+                if (p.x - c.0).abs() > 1.0 || (p.y - c.1).abs() > 1.0 {
+                    hold_at(c);
                 }
             }
             true
