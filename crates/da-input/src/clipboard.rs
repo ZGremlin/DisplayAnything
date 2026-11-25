@@ -218,24 +218,62 @@ fn set_file_paths(paths: &[PathBuf]) -> Result<()> {
 
 // NSFilenamesPboardType is deprecated by Apple, but it is still the type
 // Finder and the other apps use for copied files.
+/// Files on the Mac's pasteboard. Finder puts each file on its own item as
+/// a file URL; older apps use the file-name list, so both are read.
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
 fn file_paths() -> Option<Vec<PathBuf>> {
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
-    use objc2_app_kit::{NSFilenamesPboardType, NSPasteboard};
+    use objc2_app_kit::{NSFilenamesPboardType, NSPasteboard, NSPasteboardTypeFileURL};
     use objc2_foundation::{NSArray, NSString};
     let pb = NSPasteboard::generalPasteboard();
-    let plist: Retained<AnyObject> = pb.propertyListForType(unsafe { NSFilenamesPboardType })?;
-    let list: Retained<NSArray> = plist.downcast().ok()?;
-    Some(
-        list.iter()
+    let mut paths = Vec::new();
+    if let Some(items) = pb.pasteboardItems() {
+        for item in items.iter() {
+            let url = unsafe { item.stringForType(NSPasteboardTypeFileURL) };
+            if let Some(p) = url.and_then(|u| file_url_to_path(&u.to_string())) {
+                paths.push(p);
+            }
+        }
+    }
+    if paths.is_empty() {
+        let plist: Retained<AnyObject> =
+            pb.propertyListForType(unsafe { NSFilenamesPboardType })?;
+        let list: Retained<NSArray> = plist.downcast().ok()?;
+        paths = list
+            .iter()
             .filter_map(|o| {
                 o.downcast_ref::<NSString>()
                     .map(|s| PathBuf::from(s.to_string()))
             })
-            .collect(),
-    )
+            .collect();
+    }
+    Some(paths)
+}
+
+/// "file:///a/b%20c.txt" -> "/a/b c.txt"
+#[cfg(any(target_os = "macos", test))]
+fn file_url_to_path(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    let path = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !path.starts_with('/') {
+        return None;
+    }
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok().map(PathBuf::from)
 }
 
 #[cfg(target_os = "macos")]
@@ -272,6 +310,19 @@ fn set_file_paths(_paths: &[PathBuf]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_urls_become_paths() {
+        assert_eq!(
+            file_url_to_path("file:///Users/me/My%20File%C3%A9.txt"),
+            Some(PathBuf::from("/Users/me/My Fileé.txt"))
+        );
+        assert_eq!(
+            file_url_to_path("file://localhost/tmp/a.png"),
+            Some(PathBuf::from("/tmp/a.png"))
+        );
+        assert_eq!(file_url_to_path("https://example.com/x"), None);
+    }
 
     #[test]
     fn received_names_cannot_leave_their_folder() {

@@ -28,5 +28,5 @@ clipboard-win = "5"
 core-graphics = { version = "0.24", features = ["highsierra"] }
 core-foundation = "0.10"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSPasteboard"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSPasteboard", "NSPasteboardItem"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSString"] }
