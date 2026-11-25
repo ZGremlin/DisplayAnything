@@ -147,8 +147,12 @@ fn read_files(paths: &[PathBuf]) -> Option<Clip> {
     let mut files = Vec::new();
     let mut total = 0usize;
     for p in paths {
-        let Ok(meta) = std::fs::metadata(p) else {
-            continue;
+        let meta = match std::fs::metadata(p) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::info!(path = %p.display(), "could not stat copied file: {e}");
+                continue;
+            }
         };
         if !meta.is_file() {
             tracing::info!(path = %p.display(), "folders are not shared yet; skipping");
@@ -159,8 +163,15 @@ fn read_files(paths: &[PathBuf]) -> Option<Clip> {
             tracing::info!(total, "files on the clipboard are too large to send");
             return None;
         }
-        let Ok(data) = std::fs::read(p) else { continue };
+        let data = match std::fs::read(p) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::info!(path = %p.display(), "could not read copied file: {e}");
+                continue;
+            }
+        };
         let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            tracing::info!(path = %p.display(), "copied file has no name; skipping");
             continue;
         };
         files.push((name, data));
