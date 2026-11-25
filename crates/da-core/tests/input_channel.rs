@@ -203,3 +203,46 @@ async fn loopback_latency_is_sub_millisecond() {
     // Generous bound so a busy CI machine passes; typical is well under 0.2 ms.
     assert!(median < Duration::from_millis(1), "median {median:?}");
 }
+
+/// Bounces any Enter straight back as a Leave, like a target whose pointer
+/// was pushed out over the edge.
+#[derive(Default)]
+struct Bouncer {
+    back: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Frame>>>,
+}
+
+impl InputTarget for Bouncer {
+    fn begin(&self, _peer: &TrustedPeer, back: tokio::sync::mpsc::UnboundedSender<Frame>) {
+        *self.back.lock().unwrap() = Some(back);
+    }
+    fn frame(&self, _peer: &TrustedPeer, frame: Frame) -> Option<Frame> {
+        if let Frame::Enter { edge, pos, .. } = frame {
+            let back = self.back.lock().unwrap();
+            let _ = back.as_ref().unwrap().send(Frame::Leave { edge, pos });
+        }
+        None
+    }
+    fn end(&self, _peer: &TrustedPeer) {}
+}
+
+#[tokio::test]
+async fn pushing_out_over_the_edge_reaches_the_controller() {
+    use da_core::da_input::Edge;
+    let (mac, addr, pc) = paired().await;
+    mac.set_input_target(Some(Arc::new(Bouncer::default())));
+    let link = pc.open_input(addr).await.unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    link.on_leave(move |pos| {
+        let _ = tx.send(pos);
+    });
+    assert!(link.send(Frame::Enter {
+        edge: Edge::Right,
+        pos: 1234,
+        warp: true
+    }));
+    let pos = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("leave arrives")
+        .unwrap();
+    assert_eq!(pos, 1234);
+}

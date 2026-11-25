@@ -1,6 +1,7 @@
 //! macOS injection via Quartz events. Needs the Accessibility permission.
 
 use super::Backend;
+use crate::geometry::Rect;
 use crate::keymap::{self, LALT, LCTRL, LMETA, LSHIFT, RALT, RCTRL, RMETA, RSHIFT};
 use crate::wire::MouseButton;
 use crate::INJECTED_MARKER;
@@ -114,7 +115,37 @@ fn button_index(b: MouseButton) -> usize {
     }
 }
 
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGWarpMouseCursorPosition(p: CGPoint) -> i32;
+    fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
+}
+
 impl Backend for Platform {
+    fn cursor(&self) -> (f64, f64) {
+        let p = Platform::cursor(self);
+        (p.x, p.y)
+    }
+
+    fn screens(&self) -> Vec<Rect> {
+        CGDisplay::active_displays()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| {
+                let b = CGDisplay::new(id).bounds();
+                Rect::new(b.origin.x, b.origin.y, b.size.width, b.size.height)
+            })
+            .collect()
+    }
+
+    fn warp(&mut self, x: f64, y: f64) {
+        unsafe {
+            CGWarpMouseCursorPosition(CGPoint::new(x, y));
+            // Without this macOS ignores real mouse moves for a moment.
+            CGAssociateMouseAndMouseCursorPosition(1);
+        }
+    }
+
     fn key(&mut self, usage: u16, down: bool) {
         if let Some(f) = modifier_flag(usage) {
             if down {

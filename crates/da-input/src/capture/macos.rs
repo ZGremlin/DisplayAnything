@@ -118,6 +118,10 @@ pub(super) fn on_switch(t: Target, _held: Vec<u16>) {
                 let _ = display.hide_cursor();
             }
             Target::Local => {
+                if let Some((x, y)) = super::take_return_pos() {
+                    // Came back over the edge: appear where we crossed.
+                    crate::inject::warp(x, y);
+                }
                 CGAssociateMouseAndMouseCursorPosition(1);
                 let _ = display.show_cursor();
             }
@@ -175,11 +179,12 @@ fn handle(shared: &Shared, ty: CGEventType, e: &CGEvent) -> bool {
         | CGEventType::LeftMouseDragged
         | CGEventType::RightMouseDragged
         | CGEventType::OtherMouseDragged => {
-            if !shared.is_remote() {
-                return false;
-            }
             let dx = e.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_X) as i32;
             let dy = e.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y) as i32;
+            if !shared.is_remote() {
+                let p = e.location();
+                return shared.local_move(p.x, p.y, Some((f64::from(dx), f64::from(dy))));
+            }
             if dx != 0 || dy != 0 {
                 for m in split_move(dx, dy) {
                     shared.mouse(m);

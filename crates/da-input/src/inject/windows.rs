@@ -3,6 +3,7 @@
 //! not apply pointer acceleration a second time.
 
 use super::Backend;
+use crate::geometry::Rect;
 use crate::keymap;
 use crate::wire::MouseButton;
 use crate::INJECTED_MARKER;
@@ -10,8 +11,8 @@ use anyhow::Result;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, XBUTTON1, XBUTTON2,
+    GetCursorPos, GetSystemMetrics, SetCursorPos, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, XBUTTON1, XBUTTON2,
 };
 
 pub struct Platform;
@@ -74,6 +75,33 @@ pub(crate) fn send_key(usage: u16, down: bool) {
 impl Backend for Platform {
     fn key(&mut self, usage: u16, down: bool) {
         send_key(usage, down);
+    }
+
+    fn cursor(&self) -> (f64, f64) {
+        let mut p = POINT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut p);
+        }
+        (f64::from(p.x), f64::from(p.y))
+    }
+
+    /// The virtual desktop (all monitors). Windows keeps the pointer on a
+    /// real monitor by itself when we place it in a gap.
+    fn screens(&self) -> Vec<Rect> {
+        unsafe {
+            vec![Rect::new(
+                f64::from(GetSystemMetrics(SM_XVIRTUALSCREEN)),
+                f64::from(GetSystemMetrics(SM_YVIRTUALSCREEN)),
+                f64::from(GetSystemMetrics(SM_CXVIRTUALSCREEN)),
+                f64::from(GetSystemMetrics(SM_CYVIRTUALSCREEN)),
+            )]
+        }
+    }
+
+    fn warp(&mut self, x: f64, y: f64) {
+        unsafe {
+            let _ = SetCursorPos(x.round() as i32, y.round() as i32);
+        }
     }
 
     fn mouse_move(&mut self, dx: i32, dy: i32) {

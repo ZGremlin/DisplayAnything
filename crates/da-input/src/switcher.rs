@@ -11,7 +11,7 @@
 //! for [`RECORD_HOLD`].
 
 use crate::keymap::{self, LALT, LCTRL, LMETA, LSHIFT, RALT, RCTRL, RMETA, RSHIFT};
-use crate::wire::{InputEvent, MouseButton};
+use crate::wire::{Edge, InputEvent, MouseButton};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
 use std::time::{Duration, Instant};
@@ -102,6 +102,13 @@ pub struct Hotkeys {
     pub to_local: Combo,
     /// Always returns input to this computer, even if the link is broken.
     pub panic: Combo,
+    /// Pauses / resumes moving over by pushing the pointer past the edge.
+    #[serde(default = "default_edge_lock")]
+    pub edge_lock: Combo,
+}
+
+fn default_edge_lock() -> Combo {
+    Combo::new(&[LCTRL, LALT, 0x0F], &[]) // Ctrl+Alt+L
 }
 
 impl Default for Hotkeys {
@@ -111,6 +118,7 @@ impl Default for Hotkeys {
             to_remote: Combo::new(&[LCTRL, LALT, keymap::RIGHT], &[]),
             to_local: Combo::new(&[LCTRL, LALT, keymap::LEFT], &[]),
             panic: Combo::new(&[LCTRL, LALT, keymap::ESC], &[]),
+            edge_lock: default_edge_lock(),
         }
     }
 }
@@ -140,7 +148,19 @@ pub struct Outcome {
     pub release_buttons_locally: Vec<MouseButton>,
     /// Recording progress, while recording a hotkey.
     pub recording: Option<Recording>,
+    /// Tell the peer which of its edges input is coming from: (edge on the
+    /// peer, position along it, whether the pointer crossed there).
+    pub enter: Option<(Edge, u16, bool)>,
+    /// Input came back over the edge: put the local pointer at this
+    /// position along our edge.
+    pub place: Option<(Edge, u16)>,
+    /// Edge crossing was paused (true) or resumed (false).
+    pub edge_locked: Option<bool>,
 }
+
+/// Pushes against the edge needed to cross (arrive, then push once more),
+/// so grazing the edge doesn't switch.
+const CROSS_PUSHES: u32 = 2;
 
 #[derive(Debug)]
 struct Recorder {
@@ -183,6 +203,10 @@ pub struct Switcher {
     /// OS's key state can't be used to check them.
     hidden_from_os: HashSet<u16>,
     recorder: Option<Recorder>,
+    /// Side of this computer's screens where the peer sits (None = off).
+    edge: Option<Edge>,
+    edge_locked: bool,
+    edge_pushes: u32,
 }
 
 impl Switcher {
@@ -197,6 +221,9 @@ impl Switcher {
             swallowed_buttons: HashSet::new(),
             hidden_from_os: HashSet::new(),
             recorder: None,
+            edge: None,
+            edge_locked: false,
+            edge_pushes: 0,
         }
     }
 
@@ -233,6 +260,69 @@ impl Switcher {
             self.held.remove(&k);
             self.swallowed_keys.remove(&k);
         }
+    }
+
+    pub fn edge(&self) -> Option<Edge> {
+        self.edge
+    }
+
+    /// Which side of this computer the peer is on, for moving over by
+    /// pushing the pointer past that edge (None turns it off).
+    pub fn set_edge(&mut self, edge: Option<Edge>) {
+        tracing::info!(?edge, "edge crossing");
+        self.edge = edge;
+        self.edge_pushes = 0;
+    }
+
+    pub fn edge_locked(&self) -> bool {
+        self.edge_locked
+    }
+
+    pub fn set_edge_locked(&mut self, locked: bool) -> Outcome {
+        self.edge_locked = locked;
+        self.edge_pushes = 0;
+        Outcome {
+            edge_locked: Some(locked),
+            ..Default::default()
+        }
+    }
+
+    /// A local pointer move. `at_edge` is the position along our edge if the
+    /// pointer is on it; `toward` whether it is moving into that edge.
+    pub fn edge_push(&mut self, at_edge: Option<u16>, toward: bool) -> Outcome {
+        let ready = self.edge.is_some()
+            && !self.edge_locked
+            && self.target == Target::Local
+            && self.remote_available
+            && self.held_buttons.is_empty()
+            && self.recorder.is_none();
+        let (Some(edge), Some(pos), true, true) = (self.edge, at_edge, toward, ready) else {
+            self.edge_pushes = 0;
+            return Outcome::default();
+        };
+        self.edge_pushes += 1;
+        if self.edge_pushes < CROSS_PUSHES {
+            return Outcome::default();
+        }
+        self.edge_pushes = 0;
+        tracing::info!(?edge, pos, "pointer crossed the edge");
+        let mut out = self.switch_to(Target::Remote);
+        out.enter = Some((edge.opposite(), pos, true));
+        out.swallow = true;
+        out
+    }
+
+    /// The peer says the pointer was pushed back out over its edge at `pos`.
+    pub fn return_over_edge(&mut self, pos: u16) -> Outcome {
+        let Some(edge) = self.edge else {
+            return Outcome::default();
+        };
+        if self.target != Target::Remote {
+            return Outcome::default();
+        }
+        let mut out = self.switch_to(Target::Local);
+        out.place = Some((edge, pos));
+        out
     }
 
     pub fn hotkeys(&self) -> &Hotkeys {
@@ -314,7 +404,13 @@ impl Switcher {
             }
             Target::Local => out.send.push(InputEvent::ReleaseAll),
         }
+        // Let the peer know which edge faces us, so pushing back out over it
+        // returns input even after a switch by shortcut.
+        if let (Target::Remote, Some(e)) = (t, self.edge) {
+            out.enter = Some((e.opposite(), 32_768, false));
+        }
         self.target = t;
+        self.edge_pushes = 0;
         out
     }
 
@@ -423,6 +519,12 @@ impl Switcher {
         }
         if down {
             if first_press {
+                if self.held_combo() == self.hotkeys.edge_lock.normalized() {
+                    self.swallowed_keys.insert(usage);
+                    let mut out = self.set_edge_locked(!self.edge_locked);
+                    out.swallow = true;
+                    return out;
+                }
                 if let Some((t, panic)) = self.hotkey_target() {
                     tracing::debug!(key = format_args!("{usage:#04x}"), target = ?t, "hotkey");
                     self.swallowed_keys.insert(usage);
@@ -464,6 +566,12 @@ impl Switcher {
                     return self.record(None, Some(button), down);
                 }
             } else if down && first_press {
+                if self.held_combo() == self.hotkeys.edge_lock.normalized() {
+                    self.swallowed_buttons.insert(button);
+                    let mut out = self.set_edge_locked(!self.edge_locked);
+                    out.swallow = true;
+                    return out;
+                }
                 if let Some((t, panic)) = self.hotkey_target() {
                     tracing::debug!(?button, target = ?t, "hotkey");
                     self.swallowed_buttons.insert(button);
@@ -706,7 +814,7 @@ mod tests {
         s.set_hotkeys(Hotkeys {
             to_remote: combo.clone(),
             to_local: combo,
-            panic: Combo::new(&[LCTRL, LALT, keymap::ESC], &[]),
+            ..Hotkeys::default()
         });
         for expect in [Target::Remote, Target::Local, Target::Remote] {
             press(&mut s, LCTRL);
@@ -796,5 +904,67 @@ mod tests {
         s.prune_held(|_| false);
         release(&mut s, keymap::LEFT);
         assert_eq!(press(&mut s, keymap::RIGHT).switched, Some(Target::Remote));
+    }
+
+    #[test]
+    fn pushing_past_the_edge_crosses_over_and_comes_back() {
+        let mut s = ready();
+        s.set_edge(Some(Edge::Left));
+        // Arriving at the edge isn't enough; one more push crosses.
+        assert_eq!(s.edge_push(Some(100), true), Outcome::default());
+        let out = s.edge_push(Some(100), true);
+        assert_eq!(out.switched, Some(Target::Remote));
+        assert_eq!(out.enter, Some((Edge::Right, 100, true)));
+        assert!(out.swallow);
+        // The peer pushes us back out.
+        let out = s.return_over_edge(500);
+        assert_eq!(out.switched, Some(Target::Local));
+        assert_eq!(out.place, Some((Edge::Left, 500)));
+        assert_eq!(out.send, vec![InputEvent::ReleaseAll]);
+    }
+
+    #[test]
+    fn grazing_dragging_or_locked_does_not_cross() {
+        let mut s = ready();
+        s.set_edge(Some(Edge::Left));
+        // Touch the edge, move along it away, touch again: no crossing.
+        s.edge_push(Some(1), true);
+        s.edge_push(None, true);
+        assert_eq!(s.edge_push(Some(1), true).switched, None);
+        // Dragging something.
+        s.on_mouse(InputEvent::Button {
+            button: MouseButton::Left,
+            down: true,
+        });
+        for _ in 0..5 {
+            assert_eq!(s.edge_push(Some(1), true).switched, None);
+        }
+        s.on_mouse(InputEvent::Button {
+            button: MouseButton::Left,
+            down: false,
+        });
+        // Locked with Ctrl+Alt+L.
+        press(&mut s, LCTRL);
+        press(&mut s, LALT);
+        let out = press(&mut s, 0x0F);
+        assert_eq!(out.edge_locked, Some(true));
+        assert!(out.swallow);
+        release(&mut s, 0x0F);
+        release(&mut s, LALT);
+        release(&mut s, LCTRL);
+        for _ in 0..5 {
+            assert_eq!(s.edge_push(Some(1), true).switched, None);
+        }
+        s.set_edge_locked(false);
+        s.edge_push(Some(1), true);
+        assert_eq!(s.edge_push(Some(1), true).switched, Some(Target::Remote));
+    }
+
+    #[test]
+    fn shortcut_switch_still_tells_the_peer_its_edge() {
+        let mut s = ready();
+        s.set_edge(Some(Edge::Right));
+        let out = s.set_target(Target::Remote);
+        assert_eq!(out.enter, Some((Edge::Left, 32_768, false)));
     }
 }

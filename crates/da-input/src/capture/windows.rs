@@ -24,6 +24,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 /// (where the pointer was before going remote, where it is parked)
 static PARK: Mutex<Option<(POINT, POINT)>> = Mutex::new(None);
+/// Last local pointer position seen by the mouse hook.
+static PREV_PT: Mutex<Option<POINT>> = Mutex::new(None);
 /// Thread that owns the hooks, so it can be asked to reinstall them.
 static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
 /// Slow work on a switch (moving the pointer, releasing keys) runs here,
@@ -164,7 +166,10 @@ fn apply_switch(t: Target, held: &[u16]) {
             }
             Target::Local => {
                 let saved = PARK.lock().unwrap().take();
-                if let Some((saved, _)) = saved {
+                if let Some((x, y)) = super::take_return_pos() {
+                    // Came back over the edge: appear where we crossed.
+                    let _ = SetCursorPos(x.round() as i32, y.round() as i32);
+                } else if let Some((saved, _)) = saved {
                     let _ = SetCursorPos(saved.x, saved.y);
                 }
                 // Windows may still think a modifier is down if its key-up
@@ -246,7 +251,20 @@ fn handle_mouse(shared: &Shared, msg: u32, m: &MSLLHOOKSTRUCT) -> bool {
     let ev = match msg {
         WM_MOUSEMOVE => {
             if !shared.is_remote() {
-                return false;
+                // Windows gives no raw delta here, so derive one from the
+                // previous position. Pushing into an edge the pointer can't
+                // pass reads as "no movement"; sliding along it does not.
+                let mut prev = PREV_PT.lock().unwrap();
+                let (dx, dy) = prev.map(|p| (m.pt.x - p.x, m.pt.y - p.y)).unwrap_or((0, 0));
+                *prev = Some(m.pt);
+                drop(prev);
+                let pushing = dx == 0 && dy == 0;
+                let delta = if pushing {
+                    None
+                } else {
+                    Some((f64::from(dx), f64::from(dy)))
+                };
+                return shared.local_move(f64::from(m.pt.x), f64::from(m.pt.y), delta);
             }
             let park = PARK.lock().unwrap().map(|p| p.1).unwrap_or(m.pt);
             let (dx, dy) = (m.pt.x - park.x, m.pt.y - park.y);

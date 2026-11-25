@@ -59,6 +59,8 @@ On the computer whose keyboard and mouse you want to use, open the tray window a
 
 These are the defaults. Under **Settings › Shortcuts** you can change each one: click **Change**, then press and hold any keys and/or mouse buttons (for example Ctrl + Mouse Back) for 2 seconds. Using the same combination for switching over and coming back makes it a toggle. The tray icon turns green with a check mark while a keyboard and mouse link is up.
 
+**Edge crossing:** under **Settings › Edge crossing**, say which side the other computer is on (for example "to the left"). Then push the pointer a little past that edge of your screens and it carries on onto the other computer at the matching height, with the keyboard following; push it back out the other side to return. It won't cross while you're dragging something, and Ctrl+Alt+L (changeable) pauses it for games or presenting. Set the opposite side on the other computer to cross the other way too.
+
 The tray menu has the same switch. When input moves, the clipboard text moves with it. On a Mac receiving input from a PC keyboard, Ctrl and the Windows key are swapped so Ctrl+C copies.
 
 The receiving computer must allow it: under **Saved devices**, "May control this computer with its keyboard and mouse" (on by default).

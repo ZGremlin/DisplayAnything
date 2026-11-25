@@ -3,7 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use da_core::da_input::{self, Combo, Hotkeys, InjectorOptions, Recording, Target};
+use da_core::da_input::{self, Combo, Edge, Hotkeys, InjectorOptions, Recording, Target};
 use da_core::{
     discovery, AutoConnector, Config, Event, Fingerprint, Identity, InputShare, Node, Permissions,
     PlatformInputTarget, ShareStatus, TrustStore, DEFAULT_PORT,
@@ -36,6 +36,10 @@ struct Settings {
     /// Write da.log in the data folder.
     #[serde(default = "default_true")]
     logging: bool,
+    /// Side of this computer where the shared-with device sits, for moving
+    /// over by pushing the pointer past that edge (None = off).
+    #[serde(default)]
+    edge: Option<Edge>,
 }
 
 fn default_true() -> bool {
@@ -48,6 +52,7 @@ impl Default for Settings {
             input_peer: None,
             hotkeys: None,
             logging: true,
+            edge: None,
         }
     }
 }
@@ -136,6 +141,7 @@ enum UiEvent {
     },
     PeersChanged,
     InputChanged,
+    EdgeChanged,
     /// Live view while recording a hotkey.
     HotkeyHeld {
         combo: Combo,
@@ -394,8 +400,10 @@ fn ensure_share(state: &AppState) -> Result<Arc<InputShare>, String> {
         .hotkeys
         .clone()
         .unwrap_or_default();
+    let edge = state.settings.lock().unwrap().edge;
     match InputShare::start(state.node.clone(), hotkeys) {
         Ok(s) => {
+            s.set_edge(edge);
             *state.share.lock().unwrap() = Some(s.clone());
             *state.input_error.lock().unwrap() = None;
             Ok(s)
@@ -572,6 +580,7 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                     needed_ms: da_input::switcher::RECORD_HOLD.as_millis() as u64,
                 }),
                 Event::HotkeyRecording(Recording::Done(combo)) => finish_recording(&state, combo),
+                Event::EdgeLocked(_) => Some(UiEvent::EdgeChanged),
                 Event::SessionClosed { .. } | Event::Listening { .. } | Event::Rejected { .. } => {
                     None
                 }
@@ -718,7 +727,7 @@ fn install_crash_log() {
     }));
 }
 
-const ACTIONS: [&str; 3] = ["to_remote", "to_local", "panic"];
+const ACTIONS: [&str; 4] = ["to_remote", "to_local", "panic", "edge_lock"];
 
 fn current_hotkeys(state: &AppState) -> Hotkeys {
     state
@@ -800,21 +809,33 @@ fn finish_recording(state: &AppState, combo: Combo) -> Option<UiEvent> {
                 Ok(())
             }
         };
-        match action.as_str() {
+        let names = [
+            ("to_remote", "Switch to the other computer"),
+            ("to_local", "Come back"),
+            ("panic", "Always come back"),
+            ("edge_lock", "Pause edge crossing"),
+        ];
+        let current = |a: &str| match a {
+            "to_remote" => &hk.to_remote,
+            "to_local" => &hk.to_local,
+            "panic" => &hk.panic,
+            _ => &hk.edge_lock,
+        };
+        for (other, name) in names {
             // Switching over and back may share a combination (it toggles).
-            "to_remote" => {
-                clash("Always come back", &hk.panic)?;
-                hk.to_remote = combo.clone();
+            let toggle_pair = matches!(
+                (action.as_str(), other),
+                ("to_remote", "to_local") | ("to_local", "to_remote")
+            );
+            if other != action && !toggle_pair {
+                clash(name, current(other))?;
             }
-            "to_local" => {
-                clash("Always come back", &hk.panic)?;
-                hk.to_local = combo.clone();
-            }
-            _ => {
-                clash("Switch to the other computer", &hk.to_remote)?;
-                clash("Come back", &hk.to_local)?;
-                hk.panic = combo.clone();
-            }
+        }
+        match action.as_str() {
+            "to_remote" => hk.to_remote = combo.clone(),
+            "to_local" => hk.to_local = combo.clone(),
+            "panic" => hk.panic = combo.clone(),
+            _ => hk.edge_lock = combo.clone(),
         }
         save_hotkeys(state, (hk != Hotkeys::default()).then_some(hk));
         Ok(())
@@ -823,6 +844,45 @@ fn finish_recording(state: &AppState, combo: Combo) -> Option<UiEvent> {
         action,
         error: result.err(),
     })
+}
+
+#[derive(Serialize)]
+struct EdgeView {
+    edge: Option<Edge>,
+    locked: bool,
+}
+
+#[tauri::command]
+fn get_edge(state: State<'_, AppState>) -> EdgeView {
+    EdgeView {
+        edge: state.settings.lock().unwrap().edge,
+        locked: state
+            .share
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|s| s.edge_locked()),
+    }
+}
+
+/// Set which side of this computer the other device is on (None = off).
+#[tauri::command]
+fn set_edge(state: State<'_, AppState>, edge: Option<Edge>) {
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.edge = edge;
+        s.save(&state.data_dir);
+    }
+    if let Some(share) = state.share.lock().unwrap().clone() {
+        share.set_edge(edge);
+    }
+}
+
+#[tauri::command]
+fn set_edge_locked(state: State<'_, AppState>, locked: bool) {
+    if let Some(share) = state.share.lock().unwrap().clone() {
+        share.set_edge_locked(locked);
+    }
 }
 
 static LOG_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -1036,7 +1096,10 @@ fn main() {
             cancel_hotkey_record,
             reset_hotkeys,
             get_logging,
-            set_logging
+            set_logging,
+            get_edge,
+            set_edge,
+            set_edge_locked
         ])
         .run(tauri::generate_context!())
         .expect("error while running DisplayAnything");

@@ -67,6 +67,46 @@ pub enum InputEvent {
     ReleaseAll,
 }
 
+/// A side of a screen layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Edge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl Edge {
+    pub fn opposite(self) -> Edge {
+        match self {
+            Edge::Left => Edge::Right,
+            Edge::Right => Edge::Left,
+            Edge::Top => Edge::Bottom,
+            Edge::Bottom => Edge::Top,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Edge::Left => 1,
+            Edge::Right => 2,
+            Edge::Top => 3,
+            Edge::Bottom => 4,
+        }
+    }
+
+    fn from_u8(b: u8) -> Result<Self> {
+        Ok(match b {
+            1 => Edge::Left,
+            2 => Edge::Right,
+            3 => Edge::Top,
+            4 => Edge::Bottom,
+            _ => bail!("unknown edge {b}"),
+        })
+    }
+}
+
 /// Everything that travels on the input connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Frame {
@@ -75,6 +115,20 @@ pub enum Frame {
     ClipboardText(String),
     /// Controller -> target: "send me your clipboard", sent when switching back.
     ClipboardRequest,
+    /// Controller -> target: input now comes from beyond `edge` of the
+    /// target's screens. With `warp`, the pointer crossed over at `pos`
+    /// (0..=65535 along that edge) and should appear there.
+    Enter {
+        edge: Edge,
+        pos: u16,
+        warp: bool,
+    },
+    /// Target -> controller: the pointer was pushed out past `edge` (the
+    /// one facing the controller) at `pos`; input should go back.
+    Leave {
+        edge: Edge,
+        pos: u16,
+    },
 }
 
 const T_KEY: u8 = 1;
@@ -84,6 +138,8 @@ const T_WHEEL: u8 = 4;
 const T_RELEASE_ALL: u8 = 5;
 const T_CLIP_TEXT: u8 = 0x10;
 const T_CLIP_REQ: u8 = 0x11;
+const T_ENTER: u8 = 0x20;
+const T_LEAVE: u8 = 0x21;
 
 /// Largest clipboard text we send (1 MiB).
 pub const MAX_CLIPBOARD: usize = 1 << 20;
@@ -119,6 +175,17 @@ impl Frame {
                 out.extend_from_slice(bytes);
             }
             Frame::ClipboardRequest => out.push(T_CLIP_REQ),
+            Frame::Enter { edge, pos, warp } => {
+                out.push(T_ENTER);
+                out.push(edge.to_u8());
+                out.extend_from_slice(&pos.to_be_bytes());
+                out.push(*warp as u8);
+            }
+            Frame::Leave { edge, pos } => {
+                out.push(T_LEAVE);
+                out.push(edge.to_u8());
+                out.extend_from_slice(&pos.to_be_bytes());
+            }
         }
     }
 
@@ -172,7 +239,22 @@ impl Frame {
                 let text = String::from_utf8_lossy(&buf[5..5 + len]).into_owned();
                 Some((Frame::ClipboardText(text), 5 + len))
             }
-            T_KEY | T_MOVE | T_BUTTON | T_WHEEL | T_CLIP_TEXT => None,
+            T_ENTER if need(5) => Some((
+                Frame::Enter {
+                    edge: Edge::from_u8(buf[1])?,
+                    pos: u16::from_be_bytes([buf[2], buf[3]]),
+                    warp: buf[4] != 0,
+                },
+                5,
+            )),
+            T_LEAVE if need(4) => Some((
+                Frame::Leave {
+                    edge: Edge::from_u8(buf[1])?,
+                    pos: u16::from_be_bytes([buf[2], buf[3]]),
+                },
+                4,
+            )),
+            T_KEY | T_MOVE | T_BUTTON | T_WHEEL | T_CLIP_TEXT | T_ENTER | T_LEAVE => None,
             other => bail!("unknown input frame tag {other:#x}"),
         })
     }
@@ -241,6 +323,15 @@ mod tests {
         roundtrip(Frame::Input(InputEvent::ReleaseAll));
         roundtrip(Frame::ClipboardText("héllo 👋".into()));
         roundtrip(Frame::ClipboardRequest);
+        roundtrip(Frame::Enter {
+            edge: Edge::Right,
+            pos: 40_000,
+            warp: true,
+        });
+        roundtrip(Frame::Leave {
+            edge: Edge::Top,
+            pos: 1,
+        });
     }
 
     #[test]

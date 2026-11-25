@@ -5,10 +5,13 @@
 //! Forwarded events leave through an unbounded channel the moment they are
 //! captured, so the hook never waits on the network.
 
+use crate::geometry::{self, Rect};
 use crate::switcher::{Hotkeys, Outcome, Recording, Switcher, Target};
+use crate::wire::Edge;
 use crate::wire::InputEvent;
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 #[cfg(target_os = "macos")]
@@ -32,12 +35,30 @@ pub enum ControllerMsg {
     Switched(Target),
     /// Progress while recording a hotkey combination.
     Recording(Recording),
+    /// Tell the peer which of its edges input comes from (and whether the
+    /// pointer crossed over there). Sent before any further input.
+    Enter { edge: Edge, pos: u16, warp: bool },
+    /// Edge crossing was paused (true) or resumed (false).
+    EdgeLocked(bool),
+}
+
+/// Where to put the local pointer when input comes back over the edge;
+/// the platform's switch-back code picks it up instead of the saved spot.
+static RETURN_POS: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub(crate) fn take_return_pos() -> Option<(f64, f64)> {
+    RETURN_POS.lock().unwrap().take()
 }
 
 pub(crate) struct Shared {
     switcher: Mutex<Switcher>,
     tx: UnboundedSender<ControllerMsg>,
+    /// Displays, refreshed every couple of seconds for edge checks.
+    screens: Mutex<(Vec<Rect>, Option<Instant>)>,
 }
+
+const SCREENS_REFRESH: Duration = Duration::from_secs(2);
 
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 impl Shared {
@@ -57,12 +78,46 @@ impl Shared {
         self.apply(out)
     }
 
+    fn screens(&self) -> Vec<Rect> {
+        let mut c = self.screens.lock().unwrap();
+        if c.1.is_none_or(|t| t.elapsed() > SCREENS_REFRESH) {
+            *c = (crate::inject::screens(), Some(Instant::now()));
+        }
+        c.0.clone()
+    }
+
+    /// A local pointer move to (x, y), with its delta when the OS gives one.
+    /// Returns true if the move must be swallowed (it crossed over).
+    pub(crate) fn local_move(&self, x: f64, y: f64, delta: Option<(f64, f64)>) -> bool {
+        let Some(edge) = self.switcher.lock().unwrap().edge() else {
+            return false;
+        };
+        let at = geometry::at_edge(&self.screens(), edge, x, y);
+        let toward = delta.is_none_or(|(dx, dy)| match edge {
+            Edge::Left => dx < 0.0,
+            Edge::Right => dx > 0.0,
+            Edge::Top => dy < 0.0,
+            Edge::Bottom => dy > 0.0,
+        });
+        let out = self.switcher.lock().unwrap().edge_push(at, toward);
+        self.apply(out)
+    }
+
     pub(crate) fn mouse(&self, ev: InputEvent) -> bool {
         let out = self.switcher.lock().unwrap().on_mouse(ev);
         self.apply(out)
     }
 
     fn apply(&self, out: Outcome) -> bool {
+        if let Some((edge, pos, warp)) = out.enter {
+            let _ = self.tx.send(ControllerMsg::Enter { edge, pos, warp });
+        }
+        if let Some(locked) = out.edge_locked {
+            let _ = self.tx.send(ControllerMsg::EdgeLocked(locked));
+        }
+        if let Some((edge, pos)) = out.place {
+            *RETURN_POS.lock().unwrap() = geometry::entry_point(&self.screens(), edge, pos);
+        }
         for e in out.send {
             let _ = self.tx.send(ControllerMsg::Send(e));
         }
@@ -105,6 +160,7 @@ impl Controller {
         let shared = Arc::new(Shared {
             switcher: Mutex::new(Switcher::new(hotkeys)),
             tx,
+            screens: Mutex::new((Vec::new(), None)),
         });
         platform::start(shared.clone())?;
         Ok((Controller { shared }, rx))
@@ -158,6 +214,25 @@ impl Controller {
 
     pub fn cancel_recording(&self) {
         self.shared.switcher.lock().unwrap().cancel_recording();
+    }
+
+    pub fn set_edge(&self, edge: Option<Edge>) {
+        self.shared.switcher.lock().unwrap().set_edge(edge);
+    }
+
+    pub fn edge_locked(&self) -> bool {
+        self.shared.switcher.lock().unwrap().edge_locked()
+    }
+
+    pub fn set_edge_locked(&self, locked: bool) {
+        let out = self.shared.switcher.lock().unwrap().set_edge_locked(locked);
+        self.shared.apply(out);
+    }
+
+    /// The peer pushed the pointer back out over its edge at `pos`.
+    pub fn return_over_edge(&self, pos: u16) {
+        let out = self.shared.switcher.lock().unwrap().return_over_edge(pos);
+        self.shared.apply(out);
     }
 
     pub fn set_target(&self, t: Target) {

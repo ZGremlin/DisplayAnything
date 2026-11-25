@@ -99,6 +99,8 @@ pub enum Event {
         peer: String,
         active: bool,
     },
+    /// Edge crossing was paused (true) or resumed (false).
+    EdgeLocked(bool),
     /// Progress while recording a new hotkey combination.
     HotkeyRecording(da_input::Recording),
     /// A saved peer's displayed name changed (it renamed itself, or the

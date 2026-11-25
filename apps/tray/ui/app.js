@@ -153,7 +153,14 @@ function comboNode(combo) {
 
 let recordingAction = null;
 let recordTimeout = null;
-const ACTION_NAMES = { to_remote: "switching to the other computer", to_local: "coming back", panic: "always coming back" };
+const ACTION_NAMES = { to_remote: "switching to the other computer", to_local: "coming back", panic: "always coming back", edge_lock: "pausing edge crossing" };
+
+async function loadEdge() {
+  const v = await invoke("get_edge");
+  $("edge").value = v.edge || "";
+  $("edge-locked").checked = v.locked;
+  $("edge-locked").disabled = !v.edge;
+}
 
 async function loadHotkeys() {
   const v = await invoke("get_hotkeys");
@@ -364,6 +371,8 @@ for (const row of document.querySelectorAll(".hk-row")) {
 }
 $("hk-cancel").addEventListener("click", () => { invoke("cancel_hotkey_record"); stopRecordingUi(); $("hk-msg").textContent = "Cancelled; nothing changed."; });
 $("hk-reset").addEventListener("click", async () => { await invoke("reset_hotkeys"); $("hk-msg").textContent = "Shortcuts reset to the defaults."; loadHotkeys(); });
+$("edge").addEventListener("change", async (e) => { await invoke("set_edge", { edge: e.target.value || null }); loadEdge(); });
+$("edge-locked").addEventListener("change", (e) => invoke("set_edge_locked", { locked: e.target.checked }));
 $("logging").addEventListener("change", (e) => invoke("set_logging", { on: e.target.checked }));
 $("log-btn2").addEventListener("click", () => invoke("show_log").catch((e) => notice(String(e))));
 $("log-btn").addEventListener("click", () => invoke("show_log").catch((e) => notice(String(e))));
@@ -391,6 +400,7 @@ listen("da-event", ({ payload: ev }) => {
     case "notice": notice(ev.text); break;
     case "input_changed": loadInput(); break;
     case "hotkey_held": onHotkeyHeld(ev); break;
+    case "edge_changed": loadEdge(); break;
     case "hotkey_done": onHotkeyDone(ev); break;
   }
 });
@@ -398,6 +408,7 @@ listen("da-event", ({ payload: ev }) => {
 loadStatus();
 loadPeers().then(loadInput);
 loadHotkeys();
+loadEdge();
 invoke("get_logging").then((on) => ($("logging").checked = on));
 // Accessibility can be granted in System Settings while we are open.
 setInterval(loadInput, 5000);

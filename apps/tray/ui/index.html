@@ -91,6 +91,11 @@
       <span class="hk-combo"></span>
       <button type="button" class="secondary hk-change">Change</button>
     </div>
+    <div class="hk-row" data-action="edge_lock">
+      <span class="hk-name">Pause / resume edge crossing</span>
+      <span class="hk-combo"></span>
+      <button type="button" class="secondary hk-change">Change</button>
+    </div>
     <div id="hk-recorder" class="recorder" hidden>
       <p id="hk-prompt"></p>
       <p class="hk-live" id="hk-live">Waiting for keys…</p>
@@ -100,6 +105,19 @@
     <p id="hk-msg" class="muted"></p>
     <p class="muted">Keys and mouse buttons both work, for example Ctrl + Mouse Back. Using the same combination for switching over and coming back makes it a toggle.
       <button type="button" class="link" id="hk-reset">Reset to defaults</button></p>
+    <h3>Edge crossing</h3>
+    <label for="edge">Move to the other computer by pushing the pointer past the edge of my screens</label>
+    <select id="edge">
+      <option value="">Off (use the shortcuts only)</option>
+      <option value="left">The other computer is to the left</option>
+      <option value="right">The other computer is to the right</option>
+      <option value="top">The other computer is above</option>
+      <option value="bottom">The other computer is below</option>
+    </select>
+    <div class="perms">
+      <label><input type="checkbox" id="edge-locked"> Paused for now (for games or presenting)</label>
+    </div>
+    <p class="muted">Set this on the computer whose keyboard and mouse you're using. Push a little past the edge to cross; it won't cross while you're dragging something. Set the opposite side on the other computer to cross back the other way too.</p>
     <h3>Troubleshooting</h3>
     <div class="perms">
       <label><input type="checkbox" id="logging"> Keep a log file (helps track down problems)</label>

@@ -85,6 +85,20 @@ impl InputShare {
         self.controller.cancel_recording();
     }
 
+    /// Which side of this computer the peer sits on, for moving over by
+    /// pushing the pointer past that edge (None turns it off).
+    pub fn set_edge(&self, edge: Option<da_input::Edge>) {
+        self.controller.set_edge(edge);
+    }
+
+    pub fn edge_locked(&self) -> bool {
+        self.controller.edge_locked()
+    }
+
+    pub fn set_edge_locked(&self, locked: bool) {
+        self.controller.set_edge_locked(locked);
+    }
+
     /// Switch from the UI. Hotkeys do the same from the keyboard.
     pub fn switch(&self, t: Target) {
         self.controller.set_target(t);
@@ -133,6 +147,8 @@ impl InputShare {
                     match self.node.open_input(addr).await {
                         Ok(link) if self.peer() == Some(fp) => {
                             let name = link.peer.name.clone();
+                            let controller = self.controller.clone();
+                            link.on_leave(move |pos| controller.return_over_edge(pos));
                             *self.link.lock().unwrap() = Some(Arc::new(link));
                             self.controller.set_remote_available(true);
                             self.node.emit(Event::InputLink {
@@ -158,6 +174,12 @@ impl InputShare {
                     }
                 }
                 ControllerMsg::Recording(r) => self.node.emit(Event::HotkeyRecording(r)),
+                ControllerMsg::EdgeLocked(l) => self.node.emit(Event::EdgeLocked(l)),
+                ControllerMsg::Enter { edge, pos, warp } => {
+                    if let Some(l) = self.current_link() {
+                        l.send(Frame::Enter { edge, pos, warp });
+                    }
+                }
                 ControllerMsg::Switched(Target::Remote) => {
                     let link = self.current_link();
                     if let (Some(l), Some(text)) = (&link, da_input::clipboard::get_text()) {

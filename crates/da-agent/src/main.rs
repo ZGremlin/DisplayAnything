@@ -273,6 +273,9 @@ async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, opts: ServeOpts) -> Res
                     println!("{name} went offline; will reconnect automatically")
                 }
                 Event::HotkeyRecording(_) => {}
+                Event::EdgeLocked(l) => {
+                    println!("Edge crossing {}", if l { "paused" } else { "resumed" })
+                }
                 Event::PeerRenamed { name, fingerprint } => {
                     println!("{} is now called {name}", fingerprint.short())
                 }

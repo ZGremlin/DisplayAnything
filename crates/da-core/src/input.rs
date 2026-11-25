@@ -33,8 +33,9 @@ pub(crate) fn tune_socket(tcp: &TcpStream) {
 /// Receives input sent to this machine. Implemented by [`PlatformInputTarget`]
 /// for real use and by test doubles.
 pub trait InputTarget: Send + Sync {
-    /// A peer opened an input channel.
-    fn begin(&self, _peer: &TrustedPeer) {}
+    /// A peer opened an input channel. Frames sent on `back` go to that peer
+    /// (for example when the pointer is pushed back out over the edge).
+    fn begin(&self, _peer: &TrustedPeer, _back: UnboundedSender<Frame>) {}
     /// One frame from the peer. A returned frame is sent back (clipboard).
     fn frame(&self, peer: &TrustedPeer, frame: Frame) -> Option<Frame>;
     /// The channel closed: release anything still held.
@@ -80,7 +81,8 @@ impl Node {
             },
         )
         .await?;
-        target.begin(&peer);
+        let (back_tx, mut back_rx) = unbounded_channel::<Frame>();
+        target.begin(&peer, back_tx);
         self.emit(Event::InputReceiving {
             peer: peer.name.clone(),
             active: true,
@@ -92,7 +94,16 @@ impl Node {
             let mut chunk = [0u8; 4096];
             let mut reply = Vec::new();
             loop {
-                let n = s.read(&mut chunk).await?;
+                let n = tokio::select! {
+                    n = s.read(&mut chunk) => n?,
+                    Some(f) = back_rx.recv() => {
+                        reply.clear();
+                        f.encode(&mut reply);
+                        s.write_all(&reply).await?;
+                        s.flush().await?;
+                        continue;
+                    }
+                };
                 if n == 0 {
                     return Ok(());
                 }
@@ -151,7 +162,10 @@ pub struct InputLink {
     tx: UnboundedSender<Frame>,
     clipboard: tokio::sync::Mutex<UnboundedReceiver<String>>,
     closed: Arc<AtomicBool>,
+    on_leave: LeaveHandler,
 }
+
+type LeaveHandler = Arc<std::sync::Mutex<Option<Box<dyn Fn(u16) + Send + Sync>>>>;
 
 impl InputLink {
     fn spawn(s: TlsStream<TcpStream>, peer: TrustedPeer) -> Self {
@@ -178,6 +192,8 @@ impl InputLink {
             let _ = wr.shutdown().await;
         });
 
+        let on_leave: LeaveHandler = Arc::new(std::sync::Mutex::new(None));
+        let on_leave_r = on_leave.clone();
         let closed_r = closed.clone();
         tokio::spawn(async move {
             let mut buf = Vec::new();
@@ -193,6 +209,12 @@ impl InputLink {
                         Ok(Some((Frame::ClipboardText(t), len))) => {
                             used += len;
                             let _ = clip_tx.send(t);
+                        }
+                        Ok(Some((Frame::Leave { pos, .. }, len))) => {
+                            used += len;
+                            if let Some(f) = on_leave_r.lock().unwrap().as_ref() {
+                                f(pos);
+                            }
                         }
                         Ok(Some((_, len))) => used += len,
                         Ok(None) => break,
@@ -212,7 +234,14 @@ impl InputLink {
             tx,
             clipboard: tokio::sync::Mutex::new(clip_rx),
             closed,
+            on_leave,
         }
+    }
+
+    /// Called when the peer pushes the pointer back out over its edge, with
+    /// the position along that edge.
+    pub fn on_leave(&self, f: impl Fn(u16) + Send + Sync + 'static) {
+        *self.on_leave.lock().unwrap() = Some(Box::new(f));
     }
 
     pub fn is_closed(&self) -> bool {
@@ -256,6 +285,14 @@ pub struct PlatformInputTarget {
 enum Cmd {
     Event(InputEvent),
     SetClipboard(String),
+    Enter {
+        edge: da_input::Edge,
+        pos: u16,
+        warp: bool,
+    },
+    /// A new channel: send frames for the controller here.
+    Begin(UnboundedSender<Frame>),
+    End,
 }
 
 impl PlatformInputTarget {
@@ -275,10 +312,25 @@ impl PlatformInputTarget {
                         return;
                     }
                 };
+                let mut back: Option<UnboundedSender<Frame>> = None;
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
-                        Cmd::Event(e) => injector.inject(&e),
+                        Cmd::Event(e) => {
+                            if let Some(f) = injector.inject(&e) {
+                                tracing::info!(?f, "pointer pushed back over the edge");
+                                if let Some(b) = &back {
+                                    let _ = b.send(f);
+                                }
+                            }
+                        }
                         Cmd::SetClipboard(t) => da_input::clipboard::set_text(&t),
+                        Cmd::Enter { edge, pos, warp } => injector.enter(edge, pos, warp),
+                        Cmd::Begin(b) => back = Some(b),
+                        Cmd::End => {
+                            injector.release_all();
+                            injector.reset_edge();
+                            back = None;
+                        }
                     }
                 }
             })?;
@@ -290,8 +342,17 @@ impl PlatformInputTarget {
 }
 
 impl InputTarget for PlatformInputTarget {
+    fn begin(&self, _peer: &TrustedPeer, back: UnboundedSender<Frame>) {
+        let _ = self.tx.send(Cmd::Begin(back));
+    }
+
     fn frame(&self, _peer: &TrustedPeer, frame: Frame) -> Option<Frame> {
         match frame {
+            Frame::Enter { edge, pos, warp } => {
+                let _ = self.tx.send(Cmd::Enter { edge, pos, warp });
+                None
+            }
+            Frame::Leave { .. } => None, // only travels the other way
             Frame::Input(e) => {
                 let _ = self.tx.send(Cmd::Event(e));
                 None
@@ -307,6 +368,6 @@ impl InputTarget for PlatformInputTarget {
     }
 
     fn end(&self, _peer: &TrustedPeer) {
-        let _ = self.tx.send(Cmd::Event(InputEvent::ReleaseAll));
+        let _ = self.tx.send(Cmd::End);
     }
 }
