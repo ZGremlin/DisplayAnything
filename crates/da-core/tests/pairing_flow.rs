@@ -221,3 +221,37 @@ async fn saved_peer_reconnects_automatically_after_restart() {
     auto_task.abort();
     mac_task.abort();
 }
+
+#[tokio::test]
+async fn renames_reach_the_other_device_unless_renamed_locally() {
+    let (mac, mac_addr) = start("mac").await;
+    let pc = client("pc");
+    let mut rx = mac.subscribe();
+    pc.pair(mac_addr, || async move { Ok(next_code(&mut rx).await) })
+        .await
+        .unwrap();
+    let mac_fp = mac.identity().fingerprint();
+    let pc_fp = pc.identity().fingerprint();
+
+    // Both sides rename while a session is open; the keepalive carries it.
+    let mut session = pc.connect(mac_addr).await.unwrap();
+    mac.set_name("Studio Mac");
+    pc.set_name("Desk PC");
+    session.ping().await.unwrap();
+    assert_eq!(session.announced_name.as_deref(), Some("Studio Mac"));
+    assert_eq!(mac.trust().get(&pc_fp).unwrap().name, "Desk PC");
+
+    // A name chosen locally wins over what the peer announces...
+    pc.rename_peer(&mac_fp, Some("Mini")).unwrap();
+    session.close().await.unwrap();
+    let session = pc.connect(mac_addr).await.unwrap();
+    assert_eq!(session.peer.name, "Mini");
+    assert_eq!(pc.trust().get(&mac_fp).unwrap().name, "Mini");
+    session.close().await.unwrap();
+
+    // ...until it is cleared, then the peer's own name comes back.
+    pc.rename_peer(&mac_fp, None).unwrap();
+    let session = pc.connect(mac_addr).await.unwrap();
+    assert_eq!(session.peer.name, "Studio Mac");
+    session.close().await.unwrap();
+}

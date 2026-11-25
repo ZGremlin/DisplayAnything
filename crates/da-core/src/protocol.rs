@@ -19,6 +19,8 @@ pub enum Intent {
     Pair,
     /// Already paired: open a session.
     Connect,
+    /// Already paired: open the input channel (keyboard and mouse).
+    Input,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,11 +53,18 @@ pub enum Message {
         name: String,
         granted: Permissions,
     },
+    /// Keepalive. `name` carries the sender's current device name so a
+    /// rename reaches connected peers without reconnecting (optional, so
+    /// older builds still interoperate).
     Ping {
         seq: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     Pong {
         seq: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     Bye,
     Error {
@@ -74,6 +83,8 @@ pub enum ErrorCode {
     PairingTimeout,
     VersionMismatch,
     Protocol,
+    /// Paired, but this device does not allow that feature for you.
+    NotAllowed,
 }
 
 pub async fn write_msg<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> Result<()> {

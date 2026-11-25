@@ -5,17 +5,22 @@
 pub mod autoconnect;
 pub mod discovery;
 pub mod identity;
+pub mod input;
 pub mod net;
 pub mod pairing;
 pub mod paths;
 pub mod protocol;
+pub mod share;
 pub mod tls;
 pub mod trust;
 
 pub use autoconnect::AutoConnector;
+pub use da_input;
 pub use identity::{Fingerprint, Identity};
+pub use input::{InputLink, InputTarget, PlatformInputTarget};
 pub use net::{Config, Event, Node, Session};
 pub use paths::{default_data_dir, device_name, parse_addr};
+pub use share::{InputShare, ShareStatus};
 pub use trust::{Permissions, TrustStore, TrustedPeer};
 
 /// Default TCP port for the control channel.

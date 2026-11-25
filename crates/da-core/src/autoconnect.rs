@@ -155,6 +155,9 @@ async fn maintain(node: Arc<Node>, fp: Fingerprint, use_mdns: bool) {
             if s.ping().await.is_err() {
                 break;
             }
+            if let Some(n) = s.announced_name.take() {
+                node.note_peer_name(&fp, &n);
+            }
         }
         node.emit(Event::PeerOffline {
             name: peer.name.clone(),

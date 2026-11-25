@@ -7,6 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Shown in the tray window so testers can tell builds apart.
+  DA_BUILD: ${{ github.event.pull_request.head.sha || github.sha }}
 
 # A new push to the same branch cancels the run it replaces.
 concurrency:

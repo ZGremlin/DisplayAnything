@@ -85,6 +85,36 @@ pub enum Event {
         name: String,
         fingerprint: Fingerprint,
     },
+    /// Our keyboard and mouse now drive `peer` (Some) or this computer (None).
+    InputTargetChanged {
+        peer: Option<String>,
+    },
+    /// The input link to the peer we share our keyboard and mouse with.
+    InputLink {
+        peer: String,
+        connected: bool,
+    },
+    /// A peer started or stopped sending input to this machine.
+    InputReceiving {
+        peer: String,
+        active: bool,
+    },
+    /// A connected peer started (true) or stopped (false) actually
+    /// controlling this machine with its keyboard and mouse.
+    InputControlled {
+        peer: String,
+        active: bool,
+    },
+    /// Edge crossing was paused (true) or resumed (false).
+    EdgeLocked(bool),
+    /// Progress while recording a new hotkey combination.
+    HotkeyRecording(da_input::Recording),
+    /// A saved peer's displayed name changed (it renamed itself, or the
+    /// user renamed it here).
+    PeerRenamed {
+        fingerprint: Fingerprint,
+        name: String,
+    },
 }
 
 /// Is this address on a local network (private, loopback or link-local)?
@@ -110,12 +140,16 @@ fn now_unix() -> u64 {
 
 pub struct Node {
     identity: Identity,
+    /// The name other devices see. Starts as the identity's name and can be
+    /// changed at runtime with [`Node::set_name`].
+    name: Arc<Mutex<String>>,
     trust: Mutex<TrustStore>,
     guard: Mutex<PairGuard>,
     config: Config,
     events: broadcast::Sender<Event>,
     acceptor: TlsAcceptor,
     connector: TlsConnector,
+    input_target: Mutex<Option<Arc<dyn crate::input::InputTarget>>>,
 }
 
 impl Node {
@@ -124,6 +158,7 @@ impl Node {
         let connector = TlsConnector::from(tls::client_config(&identity)?);
         let (events, _) = broadcast::channel(64);
         Ok(Arc::new(Node {
+            name: Arc::new(Mutex::new(identity.name.clone())),
             identity,
             trust: Mutex::new(trust),
             guard: Mutex::new(PairGuard::default()),
@@ -131,11 +166,60 @@ impl Node {
             events,
             acceptor,
             connector,
+            input_target: Mutex::new(None),
         }))
     }
 
     pub fn identity(&self) -> &Identity {
         &self.identity
+    }
+
+    /// The name other devices currently see for this one.
+    pub fn name(&self) -> String {
+        self.name.lock().unwrap().clone()
+    }
+
+    /// Change the name other devices see. Connected peers pick it up with
+    /// the next keepalive; the caller is responsible for saving it and for
+    /// refreshing the mDNS advertisement.
+    pub fn set_name(&self, name: &str) {
+        *self.name.lock().unwrap() = name.trim().to_string();
+    }
+
+    /// Record the name a peer announced for itself. Ignored when the user
+    /// gave that peer a custom name here.
+    pub(crate) fn note_peer_name(&self, fp: &Fingerprint, announced: &str) {
+        match self.trust().note_announced_name(fp, announced) {
+            Ok(true) => self.emit(Event::PeerRenamed {
+                fingerprint: *fp,
+                name: announced.trim().to_string(),
+            }),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("could not save peer name: {e:#}"),
+        }
+    }
+
+    /// Give a saved peer a custom name on this device, or (with `None` or an
+    /// empty name) go back to the name it announces for itself.
+    pub fn rename_peer(&self, fp: &Fingerprint, name: Option<&str>) -> Result<bool> {
+        let changed = self.trust().rename(fp, name)?;
+        if let Some(p) = self.trust().get(fp).cloned() {
+            self.emit(Event::PeerRenamed {
+                fingerprint: *fp,
+                name: p.name,
+            });
+        }
+        Ok(changed)
+    }
+
+    /// Let paired peers (with the input permission) send keyboard and mouse
+    /// input to this machine. Without a target, input requests are refused.
+    pub fn set_input_target(&self, target: Option<Arc<dyn crate::input::InputTarget>>) {
+        *self.input_target.lock().unwrap() = target;
+    }
+
+    pub(crate) fn input_target(&self) -> Option<Arc<dyn crate::input::InputTarget>> {
+        self.input_target.lock().unwrap().clone()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -178,7 +262,7 @@ impl Node {
             });
             return Ok(());
         }
-        let _ = tcp.set_nodelay(true);
+        crate::input::tune_socket(&tcp);
         let mut tls = timeout(HANDSHAKE_TIMEOUT, self.acceptor.accept(tcp))
             .await
             .context("TLS handshake timed out")??;
@@ -206,7 +290,8 @@ impl Node {
         }
         let mut stream = TlsStream::from(tls);
         match intent {
-            Intent::Connect => self.serve_session(&mut stream, peer_fp, addr).await,
+            Intent::Connect => self.serve_session(&mut stream, peer_fp, addr, &name).await,
+            Intent::Input => self.serve_input(stream, peer_fp, addr).await,
             Intent::Pair => {
                 self.respond_pairing(&mut stream, name, peer_fp, exporter, addr)
                     .await
@@ -219,6 +304,7 @@ impl Node {
         s: &mut TlsStream<TcpStream>,
         fp: Fingerprint,
         addr: SocketAddr,
+        announced: &str,
     ) -> Result<()> {
         let peer = self.trust().get(&fp).cloned();
         let Some(peer) = peer else {
@@ -235,10 +321,11 @@ impl Node {
         };
         self.trust()
             .note_address(&fp, addr.ip().to_string(), None)?;
+        self.note_peer_name(&fp, announced);
         write_msg(
             s,
             &Message::Welcome {
-                name: self.identity.name.clone(),
+                name: self.name(),
                 granted: peer.permissions,
             },
         )
@@ -254,7 +341,16 @@ impl Node {
                 match timeout(IDLE_TIMEOUT, read_msg(s)).await {
                     Err(_) => bail!("session idle"),
                     Ok(Err(e)) => return Err(e),
-                    Ok(Ok(Message::Ping { seq })) => write_msg(s, &Message::Pong { seq }).await?,
+                    Ok(Ok(Message::Ping { seq, name })) => {
+                        if let Some(n) = name {
+                            self.note_peer_name(&fp, &n);
+                        }
+                        let reply = Message::Pong {
+                            seq,
+                            name: Some(self.name()),
+                        };
+                        write_msg(s, &reply).await?
+                    }
                     Ok(Ok(Message::Bye)) => return Ok(()),
                     Ok(Ok(other)) => tracing::debug!(?other, "ignoring message"),
                 }
@@ -400,6 +496,7 @@ impl Node {
             last_addr: Some(addr.ip().to_string()),
             port: None,
             auto_connect: true,
+            custom_name: false,
         });
         if let Err(e) = stored {
             return PairOutcome::NoGuess(e.context("saving trusted peer"));
@@ -415,7 +512,7 @@ impl Node {
             write_msg(
                 s,
                 &Message::PairOk {
-                    name: self.identity.name.clone(),
+                    name: self.name(),
                     granted,
                 },
             )
@@ -438,7 +535,7 @@ impl Node {
     // Initiator side
     // ------------------------------------------------------------------
 
-    async fn dial(
+    pub(crate) async fn dial(
         &self,
         addr: SocketAddr,
     ) -> Result<(TlsStream<TcpStream>, Fingerprint, [u8; 32])> {
@@ -449,7 +546,7 @@ impl Node {
             .await
             .with_context(|| format!("timed out connecting to {addr}"))?
             .with_context(|| format!("could not reach {addr}"))?;
-        let _ = tcp.set_nodelay(true);
+        crate::input::tune_socket(&tcp);
         let name = rustls::pki_types::ServerName::try_from(TLS_SERVER_NAME)?;
         let tls = timeout(HANDSHAKE_TIMEOUT, self.connector.connect(name, tcp))
             .await
@@ -471,7 +568,7 @@ impl Node {
             &mut s,
             &Message::Hello {
                 version: PROTOCOL_VERSION,
-                name: self.identity.name.clone(),
+                name: self.name(),
                 intent: Intent::Pair,
             },
         )
@@ -528,6 +625,7 @@ impl Node {
             last_addr: Some(addr.ip().to_string()),
             port: Some(addr.port()),
             auto_connect: true,
+            custom_name: false,
         };
         self.trust().upsert(peer.clone())?;
         let _ = write_msg(&mut s, &Message::Bye).await;
@@ -548,20 +646,24 @@ impl Node {
             &mut s,
             &Message::Hello {
                 version: PROTOCOL_VERSION,
-                name: self.identity.name.clone(),
+                name: self.name(),
                 intent: Intent::Connect,
             },
         )
         .await?;
         match timeout(HANDSHAKE_TIMEOUT, read_msg(&mut s)).await?? {
-            Message::Welcome { granted, .. } => {
+            Message::Welcome { granted, name } => {
                 self.trust()
                     .note_address(&fp, addr.ip().to_string(), Some(addr.port()))?;
+                self.note_peer_name(&fp, &name);
+                let peer = self.trust().get(&fp).cloned().unwrap_or(peer);
                 Ok(Session {
                     peer,
                     granted_to_us: granted,
                     stream: s,
                     seq: 0,
+                    own_name: self.name.clone(),
+                    announced_name: None,
                 })
             }
             Message::Error { message, .. } => bail!("{message}"),
@@ -586,7 +688,7 @@ fn export_client(conn: &rustls::ClientConnection) -> Result<[u8; 32]> {
     Ok(conn.export_keying_material([0u8; 32], pairing::EXPORTER_LABEL, None)?)
 }
 
-async fn send_err(
+pub(crate) async fn send_err(
     s: &mut (impl tokio::io::AsyncWrite + Unpin),
     code: ErrorCode,
     message: &str,
@@ -609,6 +711,9 @@ pub struct Session {
     pub granted_to_us: Permissions,
     stream: TlsStream<TcpStream>,
     seq: u64,
+    own_name: Arc<Mutex<String>>,
+    /// The name the peer reported in its latest keepalive reply.
+    pub announced_name: Option<String>,
 }
 
 impl Session {
@@ -617,10 +722,16 @@ impl Session {
         self.seq += 1;
         let seq = self.seq;
         let t0 = Instant::now();
-        write_msg(&mut self.stream, &Message::Ping { seq }).await?;
+        let name = Some(self.own_name.lock().unwrap().clone());
+        write_msg(&mut self.stream, &Message::Ping { seq, name }).await?;
         loop {
             match timeout(HANDSHAKE_TIMEOUT, read_msg(&mut self.stream)).await?? {
-                Message::Pong { seq: s } if s == seq => return Ok(t0.elapsed()),
+                Message::Pong { seq: s, name } if s == seq => {
+                    if name.is_some() {
+                        self.announced_name = name;
+                    }
+                    return Ok(t0.elapsed());
+                }
                 Message::Pong { .. } => continue,
                 other => bail!("unexpected reply {other:?}"),
             }

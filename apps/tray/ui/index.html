@@ -9,7 +9,10 @@
 <body>
   <header>
     <div>
-      <h1 id="name">DisplayAnything</h1>
+      <div class="name-row">
+        <h1 id="name" title="Click to rename this computer">DisplayAnything</h1>
+        <button type="button" class="link" id="rename-btn">Rename</button>
+      </div>
       <p class="muted">Fingerprint <span id="fp">…</span> · port <span id="port">…</span></p>
     </div>
     <label class="switch" title="Start DisplayAnything when you log in">
@@ -23,6 +26,29 @@
     <p><strong id="code-peer"></strong> wants to pair with this computer.</p>
     <p class="code" id="code"></p>
     <p class="muted">Type this code on that device. It expires in <span id="code-ttl"></span> s.</p>
+  </section>
+
+  <section class="card" id="input-card">
+    <h2>Keyboard and mouse</h2>
+    <div id="ax-banner" class="notice" hidden>
+      macOS needs the Accessibility and Input Monitoring permissions before DisplayAnything can share or receive the keyboard (the mouse can work without them).
+      <button type="button" id="ax-btn" class="secondary">Open the permission prompt</button>
+    </div>
+    <p id="receiving" class="muted" hidden></p>
+    <form id="input-form">
+      <label for="input-peer">Share this computer's keyboard and mouse with</label>
+      <select id="input-peer"><option value="">Nobody</option></select>
+    </form>
+    <div id="input-live" hidden>
+      <p><span class="dot" id="input-dot"></span><span id="input-state"></span></p>
+      <div class="switch-row">
+        <button type="button" id="use-local" class="secondary">Use on this computer</button>
+        <button type="button" id="use-remote">Use on <span id="peer-name-btn"></span></button>
+      </div>
+      <p class="muted" id="hint-keys">Shortcuts: <span id="hint-remote"></span> switch over, <span id="hint-local"></span> come back, <span id="hint-panic"></span> always returns here. Change them under Settings.</p>
+      <p class="muted" id="hint-edge" hidden>Edge crossing is on: push the pointer past the <span id="hint-side"></span> edge of your screens to move over, and back out the other side to return. <span id="hint-panic2"></span> always returns here.</p>
+    </div>
+    <p id="input-error" class="muted"></p>
   </section>
 
   <section class="card">
@@ -48,6 +74,66 @@
     <ul id="peers" class="peers"></ul>
   </section>
 
+  <section class="card" id="settings-card">
+    <h2>Settings</h2>
+    <h3>How to switch</h3>
+    <label for="edge">Move between computers with</label>
+    <select id="edge">
+      <option value="">Shortcuts and buttons</option>
+      <option value="left">Edge crossing: the other computer is to the left</option>
+      <option value="right">Edge crossing: the other computer is to the right</option>
+      <option value="top">Edge crossing: the other computer is above</option>
+      <option value="bottom">Edge crossing: the other computer is below</option>
+    </select>
+    <div class="perms" id="edge-opts">
+      <label><input type="checkbox" id="edge-locked"> Paused for now (for games or presenting)</label>
+    </div>
+    <p class="muted" id="mode-note"></p>
+    <h3>Shortcuts</h3>
+    <div class="hk-row" data-action="to_remote">
+      <span class="hk-name">Switch to the other computer</span>
+      <span class="hk-combo"></span>
+      <button type="button" class="secondary hk-change">Change</button>
+    </div>
+    <div class="hk-row" data-action="to_local">
+      <span class="hk-name">Come back to this computer</span>
+      <span class="hk-combo"></span>
+      <button type="button" class="secondary hk-change">Change</button>
+    </div>
+    <div class="hk-row" data-action="panic">
+      <span class="hk-name">Always come back (works even if the connection is broken)</span>
+      <span class="hk-combo"></span>
+      <button type="button" class="secondary hk-change">Change</button>
+    </div>
+    <div class="hk-row" data-action="edge_lock">
+      <span class="hk-name">Pause / resume edge crossing</span>
+      <span class="hk-combo"></span>
+      <button type="button" class="secondary hk-change">Change</button>
+    </div>
+    <div id="hk-recorder" class="recorder" hidden>
+      <p id="hk-prompt"></p>
+      <p class="hk-live" id="hk-live">Waiting for keys…</p>
+      <div class="bar"><div id="hk-bar"></div></div>
+      <button type="button" id="hk-cancel" class="secondary">Cancel</button>
+    </div>
+    <p id="hk-msg" class="muted"></p>
+    <p class="muted">Keys and mouse buttons both work, for example Ctrl + Mouse Back. Using the same combination for switching over and coming back makes it a toggle.
+      <button type="button" class="link" id="hk-reset">Reset to defaults</button></p>
+    <h3>Keys</h3>
+    <div class="perms">
+      <label><input type="checkbox" id="swap"> When another computer controls this one, swap Ctrl and Command/Windows</label>
+    </div>
+    <label for="speed">Pointer speed when another computer controls this one: <span id="speed-val">100%</span></label>
+    <input type="range" id="speed" min="25" max="400" step="5" value="100">
+    <p class="muted">Set this on the computer being controlled. Pointer movement is already adjusted for each computer's display scaling; use the slider if the other computer's mouse still feels faster or slower here than on its own screen. On a Mac the swap is on by default, so a PC's Ctrl+C and Ctrl+V copy and paste, and Ctrl+Space opens Spotlight. Turn it off to have the Windows key act as Command instead.</p>
+    <h3>Troubleshooting</h3>
+    <div class="perms">
+      <label><input type="checkbox" id="logging"> Keep a log file (helps track down problems)</label>
+      <button type="button" class="link" id="log-btn2">Show log file</button>
+    </div>
+  </section>
+
+  <footer class="muted">Build <span id="build">…</span> · <button type="button" class="link" id="log-btn">Show log file</button></footer>
   <script src="app.js"></script>
 </body>
 </html>
