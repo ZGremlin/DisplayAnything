@@ -183,6 +183,7 @@ impl InputShare {
                 ControllerMsg::Switched(Target::Remote) => {
                     let link = self.current_link();
                     if let Some(l) = &link {
+                        l.send(Frame::Scale(da_input::inject::pointer_scale_percent()));
                         l.send(Frame::Active(true));
                     }
                     if let (Some(l), Some(text)) = (&link, da_input::clipboard::get_text()) {
