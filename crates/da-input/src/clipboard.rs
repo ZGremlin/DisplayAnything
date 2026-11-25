@@ -67,6 +67,12 @@ pub fn get() -> Option<Clip> {
 fn read_clipboard() -> Option<Clip> {
     if let Some(paths) = file_paths() {
         if !paths.is_empty() {
+            if let Some(clip) = read_files(&paths) {
+                return Some(clip);
+            }
+            // The copy may still be settling, or a cloud file may still be
+            // downloading. Look once more shortly after before giving up.
+            std::thread::sleep(std::time::Duration::from_millis(300));
             return read_files(&paths);
         }
     }
