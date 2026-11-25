@@ -10,3 +10,7 @@ pub(super) fn start(_shared: Arc<Shared>) -> Result<()> {
 pub(super) fn release_local_key(_usage: u16) {}
 
 pub(super) fn on_switch(_t: Target, _held: Vec<u16>) {}
+
+pub(super) fn key_is_down(_usage: u16) -> Option<bool> {
+    None
+}

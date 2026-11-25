@@ -3,7 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use da_core::da_input::{self, Hotkeys, InjectorOptions, Target};
+use da_core::da_input::{self, Combo, Hotkeys, InjectorOptions, Recording, Target};
 use da_core::{
     discovery, AutoConnector, Config, Event, Fingerprint, Identity, InputShare, Node, Permissions,
     PlatformInputTarget, ShareStatus, TrustStore, DEFAULT_PORT,
@@ -25,11 +25,31 @@ const AUTOSTART_SET_MARKER: &str = "autostart_configured";
 const SETTINGS_FILE: &str = "tray_settings.json";
 
 /// Settings the tray app remembers between runs.
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Settings {
     /// Fingerprint of the device we share our keyboard and mouse with.
     #[serde(default)]
     input_peer: Option<String>,
+    /// Custom switching hotkeys (None = the defaults).
+    #[serde(default)]
+    hotkeys: Option<Hotkeys>,
+    /// Write da.log in the data folder.
+    #[serde(default = "default_true")]
+    logging: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            input_peer: None,
+            hotkeys: None,
+            logging: true,
+        }
+    }
 }
 
 impl Settings {
@@ -59,6 +79,8 @@ struct AppState {
     receiving_from: Mutex<Option<String>>,
     /// mDNS advertisement; replaced when this device is renamed.
     advertiser: Mutex<Option<discovery::Advertiser>>,
+    /// Which hotkey action is being recorded right now.
+    recording_action: Mutex<Option<String>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -114,6 +136,17 @@ enum UiEvent {
     },
     PeersChanged,
     InputChanged,
+    /// Live view while recording a hotkey.
+    HotkeyHeld {
+        combo: Combo,
+        held_ms: u64,
+        needed_ms: u64,
+    },
+    /// Recording finished: saved, or refused with a reason.
+    HotkeyDone {
+        action: String,
+        error: Option<String>,
+    },
     Notice {
         text: String,
     },
@@ -354,7 +387,14 @@ fn ensure_share(state: &AppState) -> Result<Arc<InputShare>, String> {
     // tasks) works whichever thread calls this, including the main thread.
     let rt = tauri::async_runtime::handle();
     let _guard = rt.inner().enter();
-    match InputShare::start(state.node.clone(), Hotkeys::default()) {
+    let hotkeys = state
+        .settings
+        .lock()
+        .unwrap()
+        .hotkeys
+        .clone()
+        .unwrap_or_default();
+    match InputShare::start(state.node.clone(), hotkeys) {
         Ok(s) => {
             *state.share.lock().unwrap() = Some(s.clone());
             *state.input_error.lock().unwrap() = None;
@@ -526,11 +566,21 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                     Some(UiEvent::InputChanged)
                 }
                 Event::PeerRenamed { .. } => Some(UiEvent::PeersChanged),
+                Event::HotkeyRecording(Recording::Held(combo, held)) => Some(UiEvent::HotkeyHeld {
+                    combo,
+                    held_ms: held.as_millis() as u64,
+                    needed_ms: da_input::switcher::RECORD_HOLD.as_millis() as u64,
+                }),
+                Event::HotkeyRecording(Recording::Done(combo)) => finish_recording(&state, combo),
                 Event::SessionClosed { .. } | Event::Listening { .. } | Event::Rejected { .. } => {
                     None
                 }
             };
             let n = state.online.lock().unwrap().len();
+            let share_status = state.share.lock().unwrap().as_ref().map(|s| s.status());
+            let input_connected = share_status.as_ref().is_some_and(|s| s.connected)
+                || state.receiving_from.lock().unwrap().is_some();
+            update_tray_icon(&app_e, input_connected);
             let remote_peer = state
                 .share
                 .lock()
@@ -553,6 +603,29 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
             }
         }
     });
+}
+
+/// The tray / menu bar icon: green with a check mark while a keyboard and
+/// mouse link is up in either direction.
+fn tray_icon(connected: bool) -> Option<tauri::image::Image<'static>> {
+    let bytes: &[u8] = if connected {
+        include_bytes!("../icons/tray-connected.png")
+    } else {
+        include_bytes!("../icons/tray.png")
+    };
+    tauri::image::Image::from_bytes(bytes).ok()
+}
+
+static TRAY_CONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn update_tray_icon(app: &AppHandle, connected: bool) {
+    use std::sync::atomic::Ordering;
+    if TRAY_CONNECTED.swap(connected, Ordering::Relaxed) == connected {
+        return;
+    }
+    if let (Some(tray), Some(icon)) = (app.tray_by_id("main"), tray_icon(connected)) {
+        let _ = tray.set_icon(Some(icon));
+    }
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -603,8 +676,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 show_main(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
+    match tray_icon(false) {
+        Some(icon) => tray = tray.icon(icon),
+        None => {
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+        }
     }
     tray.build(app)?;
     Ok(())
@@ -640,33 +718,196 @@ fn install_crash_log() {
     }));
 }
 
+const ACTIONS: [&str; 3] = ["to_remote", "to_local", "panic"];
+
+fn current_hotkeys(state: &AppState) -> Hotkeys {
+    state
+        .settings
+        .lock()
+        .unwrap()
+        .hotkeys
+        .clone()
+        .unwrap_or_default()
+}
+
+fn save_hotkeys(state: &AppState, hk: Option<Hotkeys>) {
+    let applied = hk.clone().unwrap_or_default();
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.hotkeys = hk;
+        s.save(&state.data_dir);
+    }
+    if let Some(share) = state.share.lock().unwrap().clone() {
+        share.set_hotkeys(applied);
+    }
+}
+
+#[derive(Serialize)]
+struct HotkeysView {
+    hotkeys: Hotkeys,
+    is_default: bool,
+}
+
+#[tauri::command]
+fn get_hotkeys(state: State<'_, AppState>) -> HotkeysView {
+    let hotkeys = current_hotkeys(&state);
+    HotkeysView {
+        is_default: hotkeys == Hotkeys::default(),
+        hotkeys,
+    }
+}
+
+/// Start recording a new combination for `action` (to_remote, to_local or
+/// panic). The window gets `hotkey_held` updates, then `hotkey_done`.
+// Async: may start input capture, which needs the Tokio runtime.
+#[tauri::command]
+async fn record_hotkey(state: State<'_, AppState>, action: String) -> Result<(), String> {
+    if !ACTIONS.contains(&action.as_str()) {
+        return Err(format!("unknown action {action}"));
+    }
+    let share = ensure_share(&state)?;
+    *state.recording_action.lock().unwrap() = Some(action);
+    share.start_recording();
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_hotkey_record(state: State<'_, AppState>) {
+    state.recording_action.lock().unwrap().take();
+    if let Some(share) = state.share.lock().unwrap().clone() {
+        share.cancel_recording();
+    }
+}
+
+#[tauri::command]
+fn reset_hotkeys(state: State<'_, AppState>) -> HotkeysView {
+    save_hotkeys(&state, None);
+    get_hotkeys(state)
+}
+
+/// A recording finished: check the combination and save it for the action.
+fn finish_recording(state: &AppState, combo: Combo) -> Option<UiEvent> {
+    let action = state.recording_action.lock().unwrap().take()?;
+    let result = (|| {
+        if let Some(p) = combo.problem() {
+            return Err(p.to_string());
+        }
+        let mut hk = current_hotkeys(state);
+        let clash = |name: &str, used: &Combo| -> Result<(), String> {
+            if *used == combo {
+                Err(format!("That combination is already used for \"{name}\"."))
+            } else {
+                Ok(())
+            }
+        };
+        match action.as_str() {
+            // Switching over and back may share a combination (it toggles).
+            "to_remote" => {
+                clash("Always come back", &hk.panic)?;
+                hk.to_remote = combo.clone();
+            }
+            "to_local" => {
+                clash("Always come back", &hk.panic)?;
+                hk.to_local = combo.clone();
+            }
+            _ => {
+                clash("Switch to the other computer", &hk.to_remote)?;
+                clash("Come back", &hk.to_local)?;
+                hk.panic = combo.clone();
+            }
+        }
+        save_hotkeys(state, (hk != Hotkeys::default()).then_some(hk));
+        Ok(())
+    })();
+    Some(UiEvent::HotkeyDone {
+        action,
+        error: result.err(),
+    })
+}
+
+static LOG_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static LOG_FILE: std::sync::OnceLock<Mutex<Option<std::fs::File>>> = std::sync::OnceLock::new();
+
+/// Writes to da.log only while logging is switched on.
+struct LogWriter;
+
+impl std::io::Write for LogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if LOG_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(f) = LOG_FILE.get() {
+                if let Some(f) = f.lock().unwrap().as_mut() {
+                    let _ = f.write_all(buf);
+                }
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn open_log_file() -> Option<std::fs::File> {
+    let dir = da_core::default_data_dir().ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("da.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
+        let _ = std::fs::remove_file(&path);
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
+fn set_logging_enabled(on: bool) {
+    let cell = LOG_FILE.get_or_init(|| Mutex::new(None));
+    let mut f = cell.lock().unwrap();
+    if on && f.is_none() {
+        *f = open_log_file();
+    }
+    LOG_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn get_logging(state: State<'_, AppState>) -> bool {
+    state.settings.lock().unwrap().logging
+}
+
+#[tauri::command]
+fn set_logging(state: State<'_, AppState>, on: bool) {
+    if on {
+        set_logging_enabled(true);
+        tracing::info!("logging switched on ({})", build_id());
+    } else {
+        tracing::info!("logging switched off");
+        set_logging_enabled(false);
+    }
+    let mut s = state.settings.lock().unwrap();
+    s.logging = on;
+    s.save(&state.data_dir);
+}
+
 /// Log to `da.log` in the data folder (and stderr), so testers can send it.
-/// Started fresh once it passes 5 MB.
+/// Can be switched off in Settings. Started fresh once it passes 5 MB.
 fn init_logging() {
     use tracing_subscriber::prelude::*;
+    let on = da_core::default_data_dir()
+        .map(|d| Settings::load(&d).logging)
+        .unwrap_or(true);
+    set_logging_enabled(on);
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info,da_input=debug,da_core=debug".into());
-    let file = da_core::default_data_dir().ok().and_then(|dir| {
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("da.log");
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
-            let _ = std::fs::remove_file(&path);
-        }
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .ok()
-    });
-    let file_layer = file.map(|f| {
-        tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_writer(std::sync::Mutex::new(f))
-    });
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer())
-        .with(file_layer)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(|| LogWriter),
+        )
         .init();
     tracing::info!("DisplayAnything {} starting", build_id());
 }
@@ -743,6 +984,7 @@ fn main() {
                 input_error: Mutex::new(None),
                 receiving_from: Mutex::new(None),
                 advertiser: Mutex::new(None),
+                recording_action: Mutex::new(None),
             });
             build_tray(app)?;
             start_background(app.handle(), node);
@@ -788,7 +1030,13 @@ fn main() {
             request_accessibility,
             rename_device,
             rename_peer,
-            show_log
+            show_log,
+            get_hotkeys,
+            record_hotkey,
+            cancel_hotkey_record,
+            reset_hotkeys,
+            get_logging,
+            set_logging
         ])
         .run(tauri::generate_context!())
         .expect("error while running DisplayAnything");

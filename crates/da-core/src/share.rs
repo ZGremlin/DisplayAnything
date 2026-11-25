@@ -67,6 +67,24 @@ impl InputShare {
         *self.peer.lock().unwrap()
     }
 
+    pub fn hotkeys(&self) -> Hotkeys {
+        self.controller.hotkeys()
+    }
+
+    pub fn set_hotkeys(&self, hotkeys: Hotkeys) {
+        self.controller.set_hotkeys(hotkeys);
+    }
+
+    /// Record the next combination held for two seconds; progress arrives
+    /// as [`Event::HotkeyRecording`].
+    pub fn start_recording(&self) {
+        self.controller.start_recording();
+    }
+
+    pub fn cancel_recording(&self) {
+        self.controller.cancel_recording();
+    }
+
     /// Switch from the UI. Hotkeys do the same from the keyboard.
     pub fn switch(&self, t: Target) {
         self.controller.set_target(t);
@@ -139,6 +157,7 @@ impl InputShare {
                         l.send_event(e);
                     }
                 }
+                ControllerMsg::Recording(r) => self.node.emit(Event::HotkeyRecording(r)),
                 ControllerMsg::Switched(Target::Remote) => {
                     let link = self.current_link();
                     if let (Some(l), Some(text)) = (&link, da_input::clipboard::get_text()) {

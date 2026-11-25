@@ -91,6 +91,20 @@ pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
         .map_err(|_| anyhow!("event tap thread exited"))?
 }
 
+/// Whether macOS thinks this key is held (None if we can't tell).
+pub(super) fn key_is_down(usage: u16) -> Option<bool> {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
+    }
+    const HID_SYSTEM_STATE: i32 = 1;
+    let code = keymap::hid_to_mac(usage)?;
+    if code == 0x39 {
+        return None; // Caps Lock reports its lock state, not the key
+    }
+    Some(unsafe { CGEventSourceKeyState(HID_SYSTEM_STATE, code) })
+}
+
 pub(super) fn release_local_key(usage: u16) {
     crate::inject::macos_send_key(usage, false);
 }

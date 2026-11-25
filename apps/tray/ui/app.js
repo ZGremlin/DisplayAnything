@@ -83,7 +83,6 @@ let knownPeers = [];
 
 async function loadInput() {
   const st = await invoke("input_status");
-  const isMac = navigator.userAgent.includes("Mac");
   $("ax-banner").hidden = st.accessibility_ok;
   const sel = $("input-peer");
   const current = st.peer_fingerprint || "";
@@ -107,11 +106,101 @@ async function loadInput() {
     $("use-remote").className = share.remote_active ? "" : "secondary";
     $("use-local").className = share.remote_active ? "secondary" : "";
   }
-  const mod = isMac ? "Ctrl+Option" : "Ctrl+Alt";
-  document.querySelectorAll("#k-mod, .k-mod2").forEach((k) => (k.textContent = mod));
   $("input-error").textContent = !st.supported
     ? "Keyboard and mouse sharing works on Windows and macOS."
     : st.error ? st.error : "";
+}
+
+// ---- Shortcuts ---------------------------------------------------------
+
+const IS_MAC = navigator.userAgent.includes("Mac");
+const NAMED_KEYS = {
+  0x28: "Enter", 0x29: "Esc", 0x2a: "Backspace", 0x2b: "Tab", 0x2c: "Space", 0x2d: "-", 0x2e: "=",
+  0x2f: "[", 0x30: "]", 0x31: "\\", 0x32: "#", 0x33: ";", 0x34: "'", 0x35: "`", 0x36: ",", 0x37: ".",
+  0x38: "/", 0x39: "Caps Lock", 0x46: "Print Screen", 0x47: "Scroll Lock", 0x48: "Pause", 0x49: "Insert",
+  0x4a: "Home", 0x4b: "Page Up", 0x4c: "Delete", 0x4d: "End", 0x4e: "Page Down", 0x4f: "→", 0x50: "←",
+  0x51: "↓", 0x52: "↑", 0x53: "Num Lock", 0x54: "Num /", 0x55: "Num *", 0x56: "Num -", 0x57: "Num +",
+  0x58: "Num Enter", 0x62: "Num 0", 0x63: "Num .", 0x64: "\\", 0x65: "Menu", 0x67: "Num =",
+};
+function keyLabel(u) {
+  if (u >= 0x04 && u <= 0x1d) return String.fromCharCode(65 + u - 0x04);
+  if (u >= 0x1e && u <= 0x26) return String(u - 0x1d);
+  if (u === 0x27) return "0";
+  if (u >= 0x3a && u <= 0x45) return `F${u - 0x39}`;
+  if (u >= 0x68 && u <= 0x73) return `F${u - 0x68 + 13}`;
+  if (u >= 0x59 && u <= 0x61) return `Num ${u - 0x58}`;
+  switch (u) {
+    case 0xe0: case 0xe4: return "Ctrl";
+    case 0xe1: case 0xe5: return "Shift";
+    case 0xe2: case 0xe6: return IS_MAC ? "Option" : "Alt";
+    case 0xe3: case 0xe7: return IS_MAC ? "Cmd" : "Win";
+  }
+  return NAMED_KEYS[u] || `Key ${u.toString(16)}`;
+}
+const BUTTON_LABELS = { left: "Left click", right: "Right click", middle: "Middle click", back: "Mouse Back", forward: "Mouse Forward" };
+
+function comboNode(combo) {
+  const frag = document.createDocumentFragment();
+  const parts = [...combo.keys.map(keyLabel), ...combo.buttons.map((b) => BUTTON_LABELS[b] || b)];
+  parts.forEach((p, i) => {
+    if (i) frag.append(" + ");
+    const k = document.createElement("kbd");
+    k.textContent = p;
+    frag.append(k);
+  });
+  return frag;
+}
+
+let recordingAction = null;
+let recordTimeout = null;
+const ACTION_NAMES = { to_remote: "switching to the other computer", to_local: "coming back", panic: "always coming back" };
+
+async function loadHotkeys() {
+  const v = await invoke("get_hotkeys");
+  for (const row of document.querySelectorAll(".hk-row")) {
+    row.querySelector(".hk-combo").replaceChildren(comboNode(v.hotkeys[row.dataset.action]));
+  }
+  $("hint-remote").replaceChildren(comboNode(v.hotkeys.to_remote));
+  $("hint-local").replaceChildren(comboNode(v.hotkeys.to_local));
+  $("hint-panic").replaceChildren(comboNode(v.hotkeys.panic));
+  $("hk-reset").hidden = v.is_default;
+}
+
+function stopRecordingUi() {
+  recordingAction = null;
+  clearTimeout(recordTimeout);
+  $("hk-recorder").hidden = true;
+  document.querySelectorAll(".hk-row").forEach((r) => r.classList.remove("recording"));
+  document.querySelectorAll(".hk-change").forEach((b) => (b.disabled = false));
+}
+
+async function startRecording(action) {
+  $("hk-msg").textContent = "";
+  try { await invoke("record_hotkey", { action }); }
+  catch (e) { $("hk-msg").textContent = String(e); return; }
+  recordingAction = action;
+  document.querySelectorAll(".hk-change").forEach((b) => (b.disabled = true));
+  document.querySelector(`.hk-row[data-action="${action}"]`).classList.add("recording");
+  $("hk-prompt").textContent = `Press and hold the keys and/or mouse buttons for ${ACTION_NAMES[action]}, and keep holding for 2 seconds.`;
+  $("hk-live").textContent = "Waiting for keys…";
+  $("hk-bar").style.width = "0";
+  $("hk-recorder").hidden = false;
+  // Give up after a while so input isn't held hostage.
+  recordTimeout = setTimeout(() => { invoke("cancel_hotkey_record"); stopRecordingUi(); $("hk-msg").textContent = "Recording timed out; nothing changed."; }, 30000);
+}
+
+function onHotkeyHeld(ev) {
+  if (!recordingAction) return;
+  const empty = !ev.combo.keys.length && !ev.combo.buttons.length;
+  if (empty) $("hk-live").textContent = "Waiting for keys…";
+  else $("hk-live").replaceChildren(comboNode(ev.combo));
+  $("hk-bar").style.width = empty ? "0" : `${Math.min(100, (ev.held_ms / ev.needed_ms) * 100)}%`;
+}
+
+async function onHotkeyDone(ev) {
+  stopRecordingUi();
+  $("hk-msg").textContent = ev.error ? `Not saved: ${ev.error}` : "Saved.";
+  await loadHotkeys();
 }
 
 let peersStale = false;
@@ -270,6 +359,13 @@ $("input-peer").addEventListener("change", async (e) => {
 });
 $("use-remote").addEventListener("click", () => invoke("switch_input", { remote: true }).catch((e) => notice(String(e))));
 $("use-local").addEventListener("click", () => invoke("switch_input", { remote: false }).catch((e) => notice(String(e))));
+for (const row of document.querySelectorAll(".hk-row")) {
+  row.querySelector(".hk-change").addEventListener("click", () => startRecording(row.dataset.action));
+}
+$("hk-cancel").addEventListener("click", () => { invoke("cancel_hotkey_record"); stopRecordingUi(); $("hk-msg").textContent = "Cancelled; nothing changed."; });
+$("hk-reset").addEventListener("click", async () => { await invoke("reset_hotkeys"); $("hk-msg").textContent = "Shortcuts reset to the defaults."; loadHotkeys(); });
+$("logging").addEventListener("change", (e) => invoke("set_logging", { on: e.target.checked }));
+$("log-btn2").addEventListener("click", () => invoke("show_log").catch((e) => notice(String(e))));
 $("log-btn").addEventListener("click", () => invoke("show_log").catch((e) => notice(String(e))));
 $("rename-btn").addEventListener("click", renameSelf);
 $("name").addEventListener("click", renameSelf);
@@ -294,10 +390,14 @@ listen("da-event", ({ payload: ev }) => {
     case "peers_changed": loadPeers().then(loadInput); break;
     case "notice": notice(ev.text); break;
     case "input_changed": loadInput(); break;
+    case "hotkey_held": onHotkeyHeld(ev); break;
+    case "hotkey_done": onHotkeyDone(ev); break;
   }
 });
 
 loadStatus();
 loadPeers().then(loadInput);
+loadHotkeys();
+invoke("get_logging").then((on) => ($("logging").checked = on));
 // Accessibility can be granted in System Settings while we are open.
 setInterval(loadInput, 5000);

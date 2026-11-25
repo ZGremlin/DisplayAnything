@@ -19,7 +19,7 @@ pub mod wire;
 
 pub use capture::{Controller, ControllerMsg};
 pub use inject::{Injector, InjectorOptions};
-pub use switcher::{Hotkeys, Target};
+pub use switcher::{Combo, Hotkeys, Recording, Target};
 pub use wire::{Frame, InputEvent, MouseButton};
 
 /// Marker put on events we synthesise, so our own capture hooks ignore them.

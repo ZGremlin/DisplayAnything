@@ -16,8 +16,8 @@ use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VIRTUAL_KEY, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_NUMLOCK, VK_PAUSE,
-    VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
+    GetAsyncKeyState, MapVirtualKeyW, MAPVK_VSC_TO_VK_EX, VIRTUAL_KEY, VK_LCONTROL, VK_LMENU,
+    VK_LSHIFT, VK_LWIN, VK_NUMLOCK, VK_PAUSE, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -124,6 +124,17 @@ pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
     ready_rx
         .recv()
         .map_err(|_| anyhow!("input hook thread exited"))?
+}
+
+/// Whether Windows thinks this key is held (None if we can't tell).
+pub(super) fn key_is_down(usage: u16) -> Option<bool> {
+    let sc = keymap::hid_to_win(usage)?;
+    let ext = if sc & 0xE000 == 0xE000 { 0xE000 } else { 0 };
+    let vk = unsafe { MapVirtualKeyW(u32::from(sc & 0xFF) | ext, MAPVK_VSC_TO_VK_EX) };
+    if vk == 0 {
+        return None;
+    }
+    Some(unsafe { GetAsyncKeyState(vk as i32) } < 0)
 }
 
 pub(super) fn release_local_key(usage: u16) {

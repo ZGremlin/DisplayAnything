@@ -909,6 +909,7 @@ dependencies = [
  "arboard",
  "core-foundation",
  "core-graphics 0.24.0",
+ "serde",
  "tokio",
  "tracing",
  "windows 0.58.0",

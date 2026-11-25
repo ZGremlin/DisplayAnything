@@ -45,7 +45,7 @@
         <button type="button" id="use-local" class="secondary">Use on this computer</button>
         <button type="button" id="use-remote">Use on <span id="peer-name-btn"></span></button>
       </div>
-      <p class="muted">Shortcuts: <kbd id="k-mod">Ctrl+Alt</kbd>+→ switch over, <kbd class="k-mod2">Ctrl+Alt</kbd>+← come back, <kbd class="k-mod2">Ctrl+Alt</kbd>+Esc always returns here.</p>
+      <p class="muted">Shortcuts: <span id="hint-remote"></span> switch over, <span id="hint-local"></span> come back, <span id="hint-panic"></span> always returns here. Change them under Settings.</p>
     </div>
     <p id="input-error" class="muted"></p>
   </section>
@@ -73,7 +73,41 @@
     <ul id="peers" class="peers"></ul>
   </section>
 
-  <script src="app.js"></script>
+  <section class="card" id="settings-card">
+    <h2>Settings</h2>
+    <h3>Shortcuts</h3>
+    <div class="hk-row" data-action="to_remote">
+      <span class="hk-name">Switch to the other computer</span>
+      <span class="hk-combo"></span>
+      <button type="button" class="secondary hk-change">Change</button>
+    </div>
+    <div class="hk-row" data-action="to_local">
+      <span class="hk-name">Come back to this computer</span>
+      <span class="hk-combo"></span>
+      <button type="button" class="secondary hk-change">Change</button>
+    </div>
+    <div class="hk-row" data-action="panic">
+      <span class="hk-name">Always come back (works even if the connection is broken)</span>
+      <span class="hk-combo"></span>
+      <button type="button" class="secondary hk-change">Change</button>
+    </div>
+    <div id="hk-recorder" class="recorder" hidden>
+      <p id="hk-prompt"></p>
+      <p class="hk-live" id="hk-live">Waiting for keys…</p>
+      <div class="bar"><div id="hk-bar"></div></div>
+      <button type="button" id="hk-cancel" class="secondary">Cancel</button>
+    </div>
+    <p id="hk-msg" class="muted"></p>
+    <p class="muted">Keys and mouse buttons both work, for example Ctrl + Mouse Back. Using the same combination for switching over and coming back makes it a toggle.
+      <button type="button" class="link" id="hk-reset">Reset to defaults</button></p>
+    <h3>Troubleshooting</h3>
+    <div class="perms">
+      <label><input type="checkbox" id="logging"> Keep a log file (helps track down problems)</label>
+      <button type="button" class="link" id="log-btn2">Show log file</button>
+    </div>
+  </section>
+
   <footer class="muted">Build <span id="build">…</span> · <button type="button" class="link" id="log-btn">Show log file</button></footer>
+  <script src="app.js"></script>
 </body>
 </html>

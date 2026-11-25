@@ -5,7 +5,7 @@
 //! Forwarded events leave through an unbounded channel the moment they are
 //! captured, so the hook never waits on the network.
 
-use crate::switcher::{Hotkeys, Outcome, Switcher, Target};
+use crate::switcher::{Hotkeys, Outcome, Recording, Switcher, Target};
 use crate::wire::InputEvent;
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
@@ -30,6 +30,8 @@ pub enum ControllerMsg {
     Send(InputEvent),
     /// The active machine changed.
     Switched(Target),
+    /// Progress while recording a hotkey combination.
+    Recording(Recording),
 }
 
 pub(crate) struct Shared {
@@ -45,7 +47,13 @@ impl Shared {
 
     /// Returns true if the event must be swallowed.
     pub(crate) fn key(&self, usage: u16, down: bool) -> bool {
-        let out = self.switcher.lock().unwrap().on_key(usage, down);
+        let out = {
+            let mut sw = self.switcher.lock().unwrap();
+            if down {
+                sw.prune_held(|k| k == usage || platform::key_is_down(k).unwrap_or(true));
+            }
+            sw.on_key(usage, down)
+        };
         self.apply(out)
     }
 
@@ -58,14 +66,21 @@ impl Shared {
         for e in out.send {
             let _ = self.tx.send(ControllerMsg::Send(e));
         }
-        if !out.release_locally.is_empty() {
+        if !out.release_locally.is_empty() || !out.release_buttons_locally.is_empty() {
             let keys = out.release_locally;
+            let buttons = out.release_buttons_locally;
             // Inject outside the hook callback, which must return quickly.
             std::thread::spawn(move || {
                 for k in keys {
                     platform::release_local_key(k);
                 }
+                for b in buttons {
+                    crate::inject::release_local_button(b);
+                }
             });
+        }
+        if let Some(r) = out.recording {
+            let _ = self.tx.send(ControllerMsg::Recording(r));
         }
         if let Some(t) = out.switched {
             let held = self.switcher.lock().unwrap().held();
@@ -111,6 +126,38 @@ impl Controller {
             .unwrap()
             .set_remote_available(available);
         self.shared.apply(out);
+    }
+
+    pub fn hotkeys(&self) -> Hotkeys {
+        self.shared.switcher.lock().unwrap().hotkeys().clone()
+    }
+
+    pub fn set_hotkeys(&self, hotkeys: Hotkeys) {
+        self.shared.switcher.lock().unwrap().set_hotkeys(hotkeys);
+    }
+
+    /// Record the next combination the user presses. Progress arrives as
+    /// [`ControllerMsg::Recording`]; presses are swallowed until it is done.
+    pub fn start_recording(&self) {
+        self.shared.switcher.lock().unwrap().start_recording();
+        // Held keys and buttons send no further events, so poll the hold
+        // timer until the recording finishes or is cancelled.
+        let shared = self.shared.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut sw = shared.switcher.lock().unwrap();
+            if !sw.is_recording() {
+                return;
+            }
+            if let Some(r) = sw.tick(std::time::Instant::now()) {
+                drop(sw);
+                let _ = shared.tx.send(ControllerMsg::Recording(r));
+            }
+        });
+    }
+
+    pub fn cancel_recording(&self) {
+        self.shared.switcher.lock().unwrap().cancel_recording();
     }
 
     pub fn set_target(&self, t: Target) {

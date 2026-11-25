@@ -57,6 +57,8 @@ On the computer whose keyboard and mouse you want to use, open the tray window a
 | Ctrl+Alt+← | Ctrl+Option+← | Bring them back |
 | Ctrl+Alt+Esc | Ctrl+Option+Esc | Always bring them back, even if the link is broken |
 
+These are the defaults. Under **Settings › Shortcuts** you can change each one: click **Change**, then press and hold any keys and/or mouse buttons (for example Ctrl + Mouse Back) for 2 seconds. Using the same combination for switching over and coming back makes it a toggle. The tray icon turns green with a check mark while a keyboard and mouse link is up.
+
 The tray menu has the same switch. When input moves, the clipboard text moves with it. On a Mac receiving input from a PC keyboard, Ctrl and the Windows key are swapped so Ctrl+C copies.
 
 The receiving computer must allow it: under **Saved devices**, "May control this computer with its keyboard and mouse" (on by default).
@@ -64,6 +66,10 @@ The receiving computer must allow it: under **Saved devices**, "May control this
 CLI: `da-agent serve --share-input-with "Mac mini"`.
 
 Known limits: Windows won't let a normal app send input to admin windows or UAC prompts; run the app as administrator if you need that.
+
+## Troubleshooting
+
+The app keeps a log (`da.log` in the data folder; **Show log file** at the bottom of the window). It can be switched off under **Settings › Troubleshooting**. The window footer shows the build, so you can check both machines run the same one.
 
 ## macOS notes
 

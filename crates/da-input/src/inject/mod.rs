@@ -39,6 +39,14 @@ impl Default for InjectorOptions {
 }
 
 /// The OS-specific half: turns events into synthetic input.
+/// Release a mouse button on this machine (capture uses it so a button held
+/// when input moves away doesn't stay pressed locally).
+pub(crate) fn release_local_button(button: MouseButton) {
+    if let Ok(mut p) = platform::Platform::new() {
+        p.button(button, false);
+    }
+}
+
 pub(crate) trait Backend {
     fn key(&mut self, usage: u16, down: bool);
     fn mouse_move(&mut self, dx: i32, dy: i32);
