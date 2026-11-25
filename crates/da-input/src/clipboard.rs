@@ -40,9 +40,31 @@ impl Clip {
     }
 }
 
+/// A short description of a clip for the log.
+pub fn describe(clip: &Clip) -> String {
+    match clip {
+        Clip::Text(t) => format!("text ({} bytes)", t.len()),
+        Clip::Png(b) => format!("image ({} bytes)", b.len()),
+        Clip::Files(f) => format!(
+            "{} file(s), {} bytes",
+            f.len(),
+            f.iter().map(|(_, d)| d.len()).sum::<usize>()
+        ),
+    }
+}
+
 /// This machine's clipboard to send: files if it has any, then text, then an
 /// image. None if there is nothing we can send.
 pub fn get() -> Option<Clip> {
+    let clip = read_clipboard();
+    match &clip {
+        Some(c) => tracing::info!("clipboard read to send: {}", describe(c)),
+        None => tracing::info!("clipboard read to send: nothing"),
+    }
+    clip
+}
+
+fn read_clipboard() -> Option<Clip> {
     if let Some(paths) = file_paths() {
         if !paths.is_empty() {
             return read_files(&paths);
@@ -82,8 +104,9 @@ pub fn set(clip: &Clip) {
         Clip::Png(b) => decode_png(b).and_then(|img| c.set_image(img).map_err(anyhow::Error::from)),
         Clip::Files(files) => receive_files(files).and_then(|paths| set_file_paths(&paths)),
     };
-    if let Err(e) = result {
-        tracing::debug!("could not set the clipboard: {e:#}");
+    match result {
+        Ok(()) => tracing::info!("clipboard set from the other computer: {}", describe(clip)),
+        Err(e) => tracing::info!("could not set the clipboard: {e:#}"),
     }
 }
 
@@ -249,6 +272,7 @@ fn file_paths() -> Option<Vec<PathBuf>> {
             })
             .collect();
     }
+    tracing::info!(count = paths.len(), "pasteboard file list read");
     Some(paths)
 }
 

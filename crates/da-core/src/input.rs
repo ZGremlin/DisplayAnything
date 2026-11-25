@@ -221,13 +221,19 @@ impl InputLink {
                         Ok(Some((Frame::ClipboardText(t), len))) => {
                             used += len;
                             let _ = clip_tx.send(Clip::Text(t));
+                            tracing::info!("clipboard text received from the other computer");
                         }
                         Ok(Some((Frame::ClipboardImage(png), len))) => {
                             used += len;
                             let _ = clip_tx.send(Clip::Png(png));
+                            tracing::info!("clipboard image received from the other computer");
                         }
                         Ok(Some((Frame::ClipboardFiles(files), len))) => {
                             used += len;
+                            tracing::info!(
+                                "clipboard files received from the other computer: {} file(s)",
+                                files.len()
+                            );
                             let _ = clip_tx.send(Clip::Files(files));
                         }
                         Ok(Some((Frame::Leave { pos, .. }, len))) => {
@@ -280,11 +286,26 @@ impl InputLink {
     /// Ask the peer for its clipboard (text or an image).
     pub async fn request_clipboard(&self, wait: Duration) -> Option<Clip> {
         let mut rx = self.clipboard.lock().await;
-        while rx.try_recv().is_ok() {} // drop stale replies
+        let mut stale = 0;
+        while rx.try_recv().is_ok() {
+            stale += 1; // drop stale replies
+        }
+        if stale > 0 {
+            tracing::info!("dropped {stale} stale clipboard reply(ies)");
+        }
         if !self.send(Frame::ClipboardRequest) {
+            tracing::info!("clipboard request not sent: the link is closed");
             return None;
         }
-        timeout(wait, rx.recv()).await.ok().flatten()
+        let got = timeout(wait, rx.recv()).await.ok().flatten();
+        match &got {
+            Some(c) => tracing::info!(
+                "clipboard reply in time: {}",
+                da_input::clipboard::describe(c)
+            ),
+            None => tracing::info!("no clipboard reply within {wait:?}"),
+        }
+        got
     }
 }
 

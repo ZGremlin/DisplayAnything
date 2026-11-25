@@ -197,6 +197,9 @@ impl InputShare {
                     if let Some(l) = self.current_link() {
                         l.send(Frame::Active(false));
                         tokio::spawn(async move {
+                            tracing::info!(
+                                "switched back: asking the other computer for its clipboard"
+                            );
                             if let Some(clip) = l.request_clipboard(CLIPBOARD_WAIT).await {
                                 if !clip.is_empty() {
                                     da_input::clipboard::set(&clip);
