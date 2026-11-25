@@ -1,9 +1,9 @@
 #!/bin/bash
 # DisplayAnything macOS setup: run after installing or updating a build.
 #
-#   bash macos-setup.sh                      # fix the copy in /Applications
-#   bash macos-setup.sh ~/Downloads/DisplayAnything-macos.zip   # install from a zip first
-#   bash macos-setup.sh ~/Downloads/DisplayAnything.app         # install from an .app first
+#   bash DisplayAnythingInstall.sh                      # fix the copy in /Applications
+#   bash DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macos.zip   # install from a zip first
+#   bash DisplayAnythingInstall.sh ~/Downloads/DisplayAnything.app         # install from an .app first
 #
 # What it does:
 #   1. Quits DisplayAnything if it is running.

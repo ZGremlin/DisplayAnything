@@ -77,7 +77,7 @@ The app keeps a log (`da.log` in the data folder; **Show log file** at the botto
 
 ## macOS notes
 
-No driver or paid Apple account is needed. After installing or updating a build, run `bash scripts/macos-setup.sh ~/Downloads/DisplayAnything-macOS.zip`: it installs the app, clears the quarantine flag, re-signs it locally and resets the permission grants that a new build invalidates, then opens the prompt. Keyboard and mouse sharing needs the **Accessibility** permission (System Settings › Privacy & Security › Accessibility); the app shows a button that opens the prompt. Screen sharing (later) will also need Screen Recording.
+No driver or paid Apple account is needed. After installing or updating a build, run `bash scripts/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip`: it installs the app, clears the quarantine flag, re-signs it locally and resets the permission grants that a new build invalidates, then opens the prompt. Keyboard and mouse sharing needs the **Accessibility** permission (System Settings › Privacy & Security › Accessibility); the app shows a button that opens the prompt. Remote screen control also needs **Screen Recording** on the computer being viewed; the script opens that page too.
 
 ## Security
 

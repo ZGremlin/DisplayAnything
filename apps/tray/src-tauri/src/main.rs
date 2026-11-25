@@ -583,7 +583,7 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                                 text: format!(
                                     "{peer} is connected, but macOS is blocking its keystrokes. In System Settings, \
                                      search for Accessibility (under Privacy & Security), remove DisplayAnything with \
-                                     the minus button, add it again, then restart the app. Or run scripts/macos-setup.sh."
+                                     the minus button, add it again, then restart the app. Or run scripts/DisplayAnythingInstall.sh."
                                 ),
                             },
                         );
