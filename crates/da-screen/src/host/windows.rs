@@ -40,6 +40,7 @@ use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 const POOL: usize = 4;
 
 pub(super) struct Host {
+    bounds: Option<crate::DisplayBounds>,
     stop: Arc<AtomicBool>,
     keyframe: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -47,6 +48,11 @@ pub(super) struct Host {
 
 impl Host {
     pub(super) fn start(opts: HostOptions, mut sink: Sink) -> Result<Self> {
+        let mons = monitors();
+        let bounds = mons
+            .get(opts.display as usize)
+            .or_else(|| mons.first())
+            .map(|m| m.bounds);
         let stop = Arc::new(AtomicBool::new(false));
         let keyframe = Arc::new(AtomicBool::new(true));
         let (stop2, key2) = (stop.clone(), keyframe.clone());
@@ -59,6 +65,7 @@ impl Host {
                 }
             })?;
         Ok(Host {
+            bounds,
             stop,
             keyframe,
             thread: Some(thread),
@@ -67,6 +74,10 @@ impl Host {
 
     pub(super) fn request_keyframe(&self) {
         self.keyframe.store(true, Ordering::Relaxed);
+    }
+
+    pub(super) fn bounds(&self) -> Option<crate::DisplayBounds> {
+        self.bounds
     }
 }
 
@@ -84,6 +95,7 @@ struct Monitor {
     primary: bool,
     width: u32,
     height: u32,
+    bounds: crate::DisplayBounds,
 }
 
 fn monitors() -> Vec<Monitor> {
@@ -100,6 +112,12 @@ fn monitors() -> Vec<Monitor> {
                 primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
                 width: (r.right - r.left) as u32,
                 height: (r.bottom - r.top) as u32,
+                bounds: crate::DisplayBounds {
+                    x: f64::from(r.left),
+                    y: f64::from(r.top),
+                    width: f64::from(r.right - r.left),
+                    height: f64::from(r.bottom - r.top),
+                },
             });
         }
         TRUE

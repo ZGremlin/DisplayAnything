@@ -28,6 +28,28 @@ pub fn platform_supported() -> bool {
     cfg!(any(windows, target_os = "macos"))
 }
 
+/// Where the shared monitor sits, in the host's global pointer coordinates
+/// (pixels on Windows, points on macOS).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DisplayBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl DisplayBounds {
+    /// A fraction of the screen (0..=65535 per axis) as a global position.
+    pub fn point(&self, x: u16, y: u16) -> (f64, f64) {
+        let fx = f64::from(x) / 65535.0;
+        let fy = f64::from(y) / 65535.0;
+        (
+            self.x + fx * (self.width - 1.0).max(0.0),
+            self.y + fy * (self.height - 1.0).max(0.0),
+        )
+    }
+}
+
 /// One of the host's monitors.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DisplayInfo {

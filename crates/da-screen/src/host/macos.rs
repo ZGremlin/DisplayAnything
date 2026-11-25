@@ -16,8 +16,9 @@ use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_graphics::{
-    CGDirectDisplayID, CGDisplayCopyDisplayMode, CGDisplayMode, CGGetActiveDisplayList,
-    CGMainDisplayID, CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess,
+    CGDirectDisplayID, CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode,
+    CGGetActiveDisplayList, CGMainDisplayID, CGPreflightScreenCaptureAccess,
+    CGRequestScreenCaptureAccess,
 };
 use objc2_core_media::{
     kCMSampleAttachmentKey_NotSync, kCMTimeInvalid, kCMVideoCodecType_H264, CMSampleBuffer, CMTime,
@@ -74,6 +75,7 @@ impl Drop for Encoder {
 }
 
 pub(super) struct Host {
+    bounds: Option<crate::DisplayBounds>,
     state: Arc<State>,
     stream: SendBox<Retained<SCStream>>,
     _output: SendBox<Retained<StreamOutput>>,
@@ -114,6 +116,13 @@ impl Host {
         let (pw, ph) = pixel_size(id)
             .unwrap_or_else(|| unsafe { (display.width() as u32, display.height() as u32) });
         let (width, height) = (even(pw), even(ph));
+        let b = CGDisplayBounds(id);
+        let bounds = Some(crate::DisplayBounds {
+            x: b.origin.x,
+            y: b.origin.y,
+            width: b.size.width,
+            height: b.size.height,
+        });
 
         let state = Arc::new(State {
             sink: Mutex::new(sink),
@@ -203,6 +212,7 @@ impl Host {
             })?;
 
         Ok(Host {
+            bounds,
             state,
             stream: SendBox(stream),
             _output: SendBox(output),
@@ -213,6 +223,10 @@ impl Host {
 
     pub(super) fn request_keyframe(&self) {
         self.state.keyframe.store(true, Ordering::Relaxed);
+    }
+
+    pub(super) fn bounds(&self) -> Option<crate::DisplayBounds> {
+        self.bounds
     }
 }
 

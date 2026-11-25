@@ -1,37 +1,239 @@
 //! Remote screen control from the tray app: a native window per peer that
-//! shows its screen (step 1: view only).
+//! shows its screen and, while it has focus, sends this computer's keyboard
+//! and mouse to it.
 //!
 //! The window is a bare Tauri window with no web view; the platform
 //! presenter (Direct3D swap chain on Windows, AVSampleBufferDisplayLayer on
 //! macOS) draws straight into it.
+//!
+//! Input comes from the same capture that shares the keyboard and mouse
+//! ([`da_core::InputShare`]), switched into remote-control mode while any
+//! viewer window is open: sharing is paused, keys are taken while a viewer
+//! window has focus, and pointer positions are mapped into the picture.
+//! Ctrl+Alt+Esc closes every viewer window.
 
-use crate::{fp_from, AppState, UiEvent};
+use crate::{ensure_share, fp_from, AppState, UiEvent};
+use da_core::da_input::{GrabEvent, InputEvent, MouseButton};
 use da_core::da_screen::wire::StartRequest;
-use da_core::da_screen::{Presenter, ViewMsg};
-use da_core::DEFAULT_PORT;
+use da_core::da_screen::{viewer::fit, Presenter, ViewMsg};
+use da_core::{InputShare, RemoteControl, DEFAULT_PORT};
 use raw_window_handle::HasWindowHandle;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 pub const WINDOW_PREFIX: &str = "remote-";
+
+/// The window's drawing area in physical pixels, plus its scale factor
+/// (macOS pointer positions arrive in points).
+#[derive(Clone, Copy, Default)]
+struct Area {
+    x: f64,
+    y: f64,
+    width: u32,
+    height: u32,
+    scale: f64,
+}
+
+struct Session {
+    task: tauri::async_runtime::JoinHandle<()>,
+    control: RemoteControl,
+    presenter: Arc<Presenter>,
+    window: tauri::Window,
+    area: Area,
+}
+
+#[derive(Default)]
+struct Inner {
+    sessions: HashMap<String, Session>,
+    /// The viewer window with focus, which gets the keyboard and mouse.
+    focused: Option<String>,
+    /// Buttons pressed into the focused session, released on focus loss.
+    held: Vec<MouseButton>,
+    /// The pointer was over the picture at its last position.
+    inside: bool,
+    /// Where captured input goes while any viewer is open.
+    grab: Option<UnboundedSender<GrabEvent>>,
+    share: Option<Arc<InputShare>>,
+}
 
 /// Running viewer sessions, by window label.
 #[derive(Default)]
 pub struct Viewers {
-    sessions: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl Viewers {
     /// The window closed: end its session (dropping the presenter and the
     /// connection, which tells the host to stop capturing).
     pub fn window_closed(&self, label: &str) {
-        if let Some(task) = self.sessions.lock().unwrap().remove(label) {
-            task.abort();
+        let mut g = self.inner.lock().unwrap();
+        if let Some(s) = g.sessions.remove(label) {
+            s.task.abort();
+        }
+        if g.focused.as_deref() == Some(label) {
+            g.focused = None;
+            g.held.clear();
+        }
+        if g.sessions.is_empty() {
+            // Back to normal keyboard and mouse sharing.
+            if let Some(share) = g.share.take() {
+                share.set_remote_control(None);
+            }
+            g.grab = None;
         }
     }
+
+    /// A viewer window gained or lost focus: input follows it.
+    pub fn window_focused(&self, label: &str, focused: bool) {
+        let mut g = self.inner.lock().unwrap();
+        if focused {
+            if !g.sessions.contains_key(label) {
+                return;
+            }
+            g.focused = Some(label.to_string());
+            g.inside = false;
+            if let Some(s) = &g.share {
+                s.set_grabbing(true);
+            }
+        } else if g.focused.as_deref() == Some(label) {
+            if let Some(s) = g.sessions.get(label) {
+                // Nothing stays held on the other computer.
+                s.control.send_input(InputEvent::ReleaseAll);
+            }
+            g.focused = None;
+            g.held.clear();
+            if let Some(s) = &g.share {
+                s.set_grabbing(false);
+            }
+        }
+    }
+
+    /// A viewer window moved or was resized.
+    pub fn window_moved(&self, label: &str) {
+        let mut g = self.inner.lock().unwrap();
+        if let Some(s) = g.sessions.get_mut(label) {
+            s.area = area_of(&s.window);
+        }
+    }
+}
+
+fn area_of(w: &tauri::Window) -> Area {
+    let pos = w.inner_position().unwrap_or_default();
+    let size = w.inner_size().unwrap_or_default();
+    Area {
+        x: pos.x as f64,
+        y: pos.y as f64,
+        width: size.width,
+        height: size.height,
+        scale: w.scale_factor().unwrap_or(1.0),
+    }
+}
+
+/// Handle one captured event for the focused viewer.
+fn on_grab(app: &AppHandle, inner: &Mutex<Inner>, ev: GrabEvent) {
+    let mut g = inner.lock().unwrap();
+    if let GrabEvent::Panic = ev {
+        let windows: Vec<tauri::Window> = g.sessions.values().map(|s| s.window.clone()).collect();
+        drop(g);
+        for w in windows {
+            let _ = w.destroy();
+        }
+        notice(app, "Remote control ended (Ctrl+Alt+Esc).".into());
+        return;
+    }
+    let Some(label) = g.focused.clone() else {
+        return;
+    };
+    let Some(s) = g.sessions.get(&label) else {
+        return;
+    };
+    let control = s.control.clone();
+    match ev {
+        GrabEvent::Key { usage, down } => control.send_input(InputEvent::Key { usage, down }),
+        GrabEvent::Pointer { x, y } => {
+            let Some(video) = s.presenter.video_size() else {
+                return;
+            };
+            let a = s.area;
+            // Windows reports physical pixels; macOS reports points.
+            let k = if cfg!(target_os = "macos") {
+                a.scale
+            } else {
+                1.0
+            };
+            let (px, py) = (x * k - a.x, y * k - a.y);
+            let (fx, fy, fw, fh) = fit(video, (a.width, a.height));
+            let u = (px - fx as f64) / fw.max(1) as f64;
+            let v = (py - fy as f64) / fh.max(1) as f64;
+            let inside = (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v);
+            g.inside = inside;
+            // Dragging past the picture's edge keeps going, pinned to it.
+            if inside || !g.held.is_empty() {
+                let n = |f: f64| (f.clamp(0.0, 1.0) * 65535.0).round() as u16;
+                control.pointer(n(u), n(v));
+            }
+        }
+        GrabEvent::Mouse(e) => match e {
+            InputEvent::Button { button, down: true } => {
+                if g.inside && !g.held.contains(&button) {
+                    g.held.push(button);
+                    control.send_input(e);
+                }
+            }
+            InputEvent::Button {
+                button,
+                down: false,
+            } => {
+                if let Some(i) = g.held.iter().position(|b| *b == button) {
+                    g.held.remove(i);
+                    control.send_input(e);
+                }
+            }
+            InputEvent::Wheel { .. } if g.inside => control.send_input(e),
+            _ => {}
+        },
+        GrabEvent::Panic => {}
+    }
+}
+
+/// Switch input capture into remote-control mode (once, for the first
+/// viewer) and return where captured events go. None when input capture
+/// can't run here (the viewer is then view-only).
+fn start_grab(
+    app: &AppHandle,
+    viewers: &Viewers,
+    state: &AppState,
+) -> Option<UnboundedSender<GrabEvent>> {
+    let mut g = viewers.inner.lock().unwrap();
+    if let Some(tx) = &g.grab {
+        return Some(tx.clone());
+    }
+    let share = match ensure_share(state) {
+        Ok(s) => s,
+        Err(e) => {
+            notice(
+                app,
+                format!("Showing the screen only: keyboard and mouse capture is unavailable ({e})"),
+            );
+            return None;
+        }
+    };
+    let (tx, mut rx) = unbounded_channel::<GrabEvent>();
+    share.set_remote_control(Some(tx.clone()));
+    g.share = Some(share);
+    g.grab = Some(tx.clone());
+    let inner = viewers.inner.clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            on_grab(&app, &inner, ev);
+        }
+    });
+    Some(tx)
 }
 
 fn notice(app: &AppHandle, text: String) {
@@ -86,13 +288,26 @@ pub async fn open_remote(
 
     // The presenter attaches to the window on the main thread (macOS needs
     // that for its layer; harmless on Windows).
+    let grab = start_grab(&app, &viewers, &state);
     let (tx, rx) = tokio::sync::oneshot::channel();
     let w = window.clone();
+    let grab_keys = grab.clone();
     app.run_on_main_thread(move || {
         let r = w
             .window_handle()
             .map_err(|e| anyhow::anyhow!("no window handle: {e}"))
-            .and_then(|h| unsafe { Presenter::new(h.as_raw()) });
+            .and_then(|h| {
+                let raw = h.as_raw();
+                // Windows: keys typed into the viewer window itself (the
+                // system hook can miss them while our window has focus).
+                #[cfg(windows)]
+                if let (Some(tx), raw_window_handle::RawWindowHandle::Win32(h)) = (&grab, raw) {
+                    da_core::da_input::window_keys::attach(h.hwnd.get(), tx.clone());
+                }
+                #[cfg(not(windows))]
+                let _ = &grab_keys;
+                unsafe { Presenter::new(raw) }
+            });
         let _ = tx.send(r);
     })
     .map_err(|e| e.to_string())?;
@@ -107,6 +322,10 @@ pub async fn open_remote(
     let name = peer.name.clone();
     let app2 = app.clone();
     let win = window.clone();
+    let control = view.control();
+    let presenter2 = presenter.clone();
+    let inner = viewers.inner.clone();
+    let label2 = label.clone();
     let task = tauri::async_runtime::spawn(async move {
         let control = view.control();
         let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -119,6 +338,9 @@ pub async fn open_remote(
                         if !sized {
                             sized = true;
                             fit_window(&win, info.width, info.height);
+                            if let Some(s) = inner.lock().unwrap().sessions.get_mut(&label2) {
+                                s.area = area_of(&win);
+                            }
                         }
                     }
                     Some(ViewMsg::Video(f)) => {
@@ -144,7 +366,30 @@ pub async fn open_remote(
         drop(view);
         let _ = win.destroy();
     });
-    viewers.sessions.lock().unwrap().insert(label, task);
+    let area = area_of(&window);
+    viewers.inner.lock().unwrap().sessions.insert(
+        label.clone(),
+        Session {
+            task,
+            control,
+            presenter: presenter2,
+            window: window.clone(),
+            area,
+        },
+    );
+    if window.is_focused().unwrap_or(false) {
+        viewers.window_focused(&label, true);
+    }
+    if grab.is_some() {
+        notice(
+            &app,
+            format!(
+                "Controlling {}: click into its window to use your keyboard and mouse there. \
+                 Ctrl+Alt+Esc ends it. Keyboard and mouse sharing is paused meanwhile.",
+                peer.name
+            ),
+        );
+    }
     Ok(())
 }
 

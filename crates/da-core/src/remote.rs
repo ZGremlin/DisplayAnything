@@ -13,9 +13,11 @@ use crate::protocol::{read_msg, write_msg, ErrorCode, Intent, Message};
 use crate::trust::TrustedPeer;
 use crate::PROTOCOL_VERSION;
 use anyhow::{anyhow, bail, Context, Result};
+use da_input::{Frame, InputEvent};
 use da_screen::wire::StartRequest;
-use da_screen::{HostOptions, ScreenHost, StreamEvent, ViewMsg};
+use da_screen::{DisplayBounds, HostOptions, ScreenHost, StreamEvent, ViewMsg};
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -28,11 +30,29 @@ use tokio_rustls::TlsStream;
 /// it was started with, and dropping it stops capture.
 pub trait ScreenSource: Send + Sync {
     fn request_keyframe(&self);
+    /// Where the captured monitor sits, for placing the pointer.
+    fn bounds(&self) -> Option<DisplayBounds> {
+        None
+    }
 }
 
 impl ScreenSource for ScreenHost {
     fn request_keyframe(&self) {
         ScreenHost::request_keyframe(self);
+    }
+
+    fn bounds(&self) -> Option<DisplayBounds> {
+        ScreenHost::bounds(self)
+    }
+}
+
+/// Counts running screen sessions on the host; while any run, shared
+/// keyboard and mouse is paused (see [`Node::being_viewed`]).
+struct ViewGuard<'a>(&'a Node);
+
+impl Drop for ViewGuard<'_> {
+    fn drop(&mut self) {
+        self.0.viewers.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -150,10 +170,20 @@ impl Node {
             }
         };
         tracing::info!(peer = %peer.name, %addr, "sharing this screen");
+        self.viewers.fetch_add(1, Ordering::SeqCst);
+        let _guard = ViewGuard(self);
         self.emit(Event::RemoteViewed {
             peer: peer.name.clone(),
             active: true,
         });
+        // Keyboard and mouse from the viewer go through the same injector
+        // as shared input.
+        let target = self.input_target();
+        if let Some(t) = &target {
+            let (back, _) = unbounded_channel::<Frame>();
+            t.begin(&peer, back);
+        }
+        let bounds = host.bounds();
 
         let result: Result<()> = async {
             let mut out = Vec::with_capacity(256 * 1024);
@@ -163,6 +193,23 @@ impl Node {
                     msg = reader.next() => match msg? {
                         Some(ViewMsg::KeyframeRequest) => host.request_keyframe(),
                         Some(ViewMsg::Stop) | None => return Ok(()),
+                        Some(ViewMsg::Input(bytes)) => {
+                            let Some(t) = &target else { continue };
+                            let mut used = 0;
+                            while let Some((frame, len)) = Frame::decode(&bytes[used..])? {
+                                used += len;
+                                // Only plain input: no edges or clipboard here.
+                                if let Frame::Input(e) = frame {
+                                    t.frame(&peer, Frame::Input(e));
+                                }
+                            }
+                        }
+                        Some(ViewMsg::Pointer { x, y }) => {
+                            if let (Some(t), Some(b)) = (&target, bounds) {
+                                let (gx, gy) = b.point(x, y);
+                                t.pointer_at(&peer, gx, gy);
+                            }
+                        }
                         Some(other) => tracing::debug!("ignoring {other:?} from viewer"),
                     },
                     ev = ev_rx.recv() => {
@@ -201,6 +248,9 @@ impl Node {
         }
         .await;
 
+        if let Some(t) = &target {
+            t.end(&peer);
+        }
         // Stopping capture can block briefly; keep it off the async threads.
         let _ = tokio::task::spawn_blocking(move || drop(host)).await;
         self.emit(Event::RemoteViewed {
@@ -323,5 +373,17 @@ impl RemoteControl {
 
     pub fn stop(&self) {
         let _ = self.tx.send(ViewMsg::Stop);
+    }
+
+    /// Send a key, button, wheel or release-all to the host.
+    pub fn send_input(&self, e: InputEvent) {
+        let mut b = Vec::with_capacity(8);
+        Frame::Input(e).encode(&mut b);
+        let _ = self.tx.send(ViewMsg::Input(b));
+    }
+
+    /// Put the host's pointer at a fraction of its screen (0..=65535).
+    pub fn pointer(&self, x: u16, y: u16) {
+        let _ = self.tx.send(ViewMsg::Pointer { x, y });
     }
 }

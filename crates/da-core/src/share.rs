@@ -99,6 +99,24 @@ impl InputShare {
         self.controller.set_edge_locked(locked);
     }
 
+    /// Remote control of another screen started (Some: where keys and
+    /// pointer positions go) or ended (None). Sharing is paused meanwhile.
+    pub fn set_remote_control(
+        &self,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<da_input::GrabEvent>>,
+    ) {
+        self.controller.set_remote_control(tx);
+    }
+
+    pub fn remote_control(&self) -> bool {
+        self.controller.remote_control()
+    }
+
+    /// The remote window gained or lost focus.
+    pub fn set_grabbing(&self, on: bool) {
+        self.controller.set_grabbing(on);
+    }
+
     /// Switch from the UI. Hotkeys do the same from the keyboard.
     pub fn switch(&self, t: Target) {
         self.controller.set_target(t);
@@ -133,6 +151,14 @@ impl InputShare {
 
     async fn maintain_link(self: Arc<Self>) {
         loop {
+            // Someone controls this screen: shared input waits until they stop.
+            if self.node.being_viewed() {
+                if self.link.lock().unwrap().is_some() {
+                    self.drop_link();
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
             let has_link = self.current_link().is_some();
             if !has_link && self.link.lock().unwrap().is_some() {
                 self.drop_link(); // it closed underneath us

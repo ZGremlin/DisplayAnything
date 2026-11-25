@@ -133,6 +133,7 @@ pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
     windows_focus::start(
         || SHARED.get().is_some_and(|s| s.is_remote()),
         request_rehook,
+        || SHARED.get().is_some_and(|s| s.in_remote_control()),
     );
     Ok(())
 }

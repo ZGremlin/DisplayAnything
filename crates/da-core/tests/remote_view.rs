@@ -1,10 +1,13 @@
 //! Remote screen control end to end on loopback, with a fake screen in
 //! place of the real capture and encoder.
 
+use da_core::da_input::{Frame, InputEvent};
 use da_core::da_screen::host::Sink;
 use da_core::da_screen::wire::StartRequest;
-use da_core::da_screen::{Codec, EncodedFrame, StreamEvent, StreamInfo, ViewMsg};
-use da_core::{Config, Event, Identity, Node, Permissions, ScreenSource, TrustStore};
+use da_core::da_screen::{Codec, DisplayBounds, EncodedFrame, StreamEvent, StreamInfo, ViewMsg};
+use da_core::{
+    Config, Event, Identity, InputTarget, Node, Permissions, ScreenSource, TrustStore, TrustedPeer,
+};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,6 +49,7 @@ fn allow_remote(host: &Node, viewer: &Node) {
     let fp = viewer.identity().fingerprint();
     let perms = Permissions {
         remote_control: true,
+        input_takeover: true,
         ..host.trust().get(&fp).unwrap().permissions
     };
     host.trust().set_permissions(&fp, perms).unwrap();
@@ -59,6 +63,15 @@ struct FakeScreen {
 }
 
 impl ScreenSource for FakeScreen {
+    fn bounds(&self) -> Option<DisplayBounds> {
+        Some(DisplayBounds {
+            x: 100.0,
+            y: 50.0,
+            width: 1001.0,
+            height: 501.0,
+        })
+    }
+
     fn request_keyframe(&self) {
         let n = self.requests.fetch_add(1, Ordering::SeqCst) + 1;
         (self.sink.lock().unwrap())(StreamEvent::Frame(EncodedFrame {
@@ -169,4 +182,92 @@ async fn streams_frames_and_answers_keyframe_requests() {
     .await
     .unwrap();
     assert!(ended);
+}
+
+/// Records what the host would replay.
+#[derive(Default)]
+struct Recorder {
+    log: Mutex<Vec<String>>,
+}
+
+impl InputTarget for Recorder {
+    fn begin(&self, _: &TrustedPeer, _: tokio::sync::mpsc::UnboundedSender<Frame>) {
+        self.log.lock().unwrap().push("begin".into());
+    }
+    fn frame(&self, _: &TrustedPeer, frame: Frame) -> Option<Frame> {
+        self.log.lock().unwrap().push(format!("{frame:?}"));
+        None
+    }
+    fn end(&self, _: &TrustedPeer) {
+        self.log.lock().unwrap().push("end".into());
+    }
+    fn pointer_at(&self, _: &TrustedPeer, x: f64, y: f64) {
+        self.log.lock().unwrap().push(format!("at {x} {y}"));
+    }
+}
+
+#[tokio::test]
+async fn viewer_input_reaches_the_host_and_pauses_sharing() {
+    let (host, addr, viewer) = paired().await;
+    allow_remote(&host, &viewer);
+    let rec = Arc::new(Recorder::default());
+    host.set_input_target(Some(rec.clone()));
+    host.set_screen_starter(Some(fake_starter(
+        Arc::new(AtomicU32::new(0)),
+        Arc::new(Mutex::new(None)),
+    )));
+
+    let mut view = viewer
+        .open_remote(addr, StartRequest::default())
+        .await
+        .unwrap();
+    next(&mut view).await; // info: the session is running
+    assert!(host.being_viewed());
+
+    // Shared keyboard and mouse is refused while the screen is controlled.
+    let err = viewer
+        .open_input(addr)
+        .await
+        .err()
+        .expect("should be refused");
+    assert!(err.to_string().contains("paused"), "unexpected: {err:#}");
+
+    let control = view.control();
+    control.send_input(InputEvent::Key {
+        usage: 4,
+        down: true,
+    });
+    control.pointer(65535, 0);
+    control.pointer(0, 65535);
+    let want = [
+        "begin".to_string(),
+        format!(
+            "{:?}",
+            Frame::Input(InputEvent::Key {
+                usage: 4,
+                down: true
+            })
+        ),
+        "at 1100 50".into(),
+        "at 100 550".into(),
+    ];
+    timeout(Duration::from_secs(5), async {
+        while rec.log.lock().unwrap().len() < want.len() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("input did not arrive");
+    assert_eq!(rec.log.lock().unwrap()[..], want[..]);
+
+    drop(view);
+    timeout(Duration::from_secs(5), async {
+        while host.being_viewed()
+            || rec.log.lock().unwrap().last().map(String::as_str) != Some("end")
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("session did not end");
 }

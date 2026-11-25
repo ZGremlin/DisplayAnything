@@ -486,6 +486,14 @@ fn switch_input(state: State<'_, AppState>, remote: bool) -> Result<(), String> 
         .unwrap()
         .clone()
         .ok_or("keyboard and mouse sharing is off")?;
+    if remote && share.remote_control() {
+        return Err("keyboard and mouse sharing is paused while you control another screen".into());
+    }
+    if remote && state.node.being_viewed() {
+        return Err(
+            "keyboard and mouse sharing is paused while this screen is being controlled".into(),
+        );
+    }
     share.switch(if remote {
         Target::Remote
     } else {
@@ -625,7 +633,10 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                 Event::EdgeLocked(_) => Some(UiEvent::EdgeChanged),
                 Event::RemoteViewed { peer, active } => Some(UiEvent::Notice {
                     text: if active {
-                        format!("{peer} is viewing this screen. Close its window there to stop.")
+                        format!(
+                            "{peer} is viewing and controlling this screen. Keyboard and mouse \
+                             sharing is paused until they close its window."
+                        )
                     } else {
                         format!("{peer} stopped viewing this screen.")
                     },
@@ -1180,10 +1191,16 @@ fn main() {
         .on_window_event(|window, event| {
             if window.label().starts_with(remote::WINDOW_PREFIX) {
                 // Closing a remote screen window ends that session.
-                if let WindowEvent::Destroyed = event {
-                    window
-                        .state::<remote::Viewers>()
-                        .window_closed(window.label());
+                let viewers = window.state::<remote::Viewers>();
+                match event {
+                    WindowEvent::Destroyed => viewers.window_closed(window.label()),
+                    WindowEvent::Focused(f) => viewers.window_focused(window.label(), *f),
+                    WindowEvent::Moved(_)
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. } => {
+                        viewers.window_moved(window.label())
+                    }
+                    _ => {}
                 }
                 return;
             }

@@ -10,6 +10,10 @@ impl Host {
     }
 
     pub(super) fn request_keyframe(&self) {}
+
+    pub(super) fn bounds(&self) -> Option<crate::DisplayBounds> {
+        None
+    }
 }
 
 pub(super) fn displays() -> Vec<DisplayInfo> {

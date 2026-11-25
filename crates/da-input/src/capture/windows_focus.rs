@@ -52,10 +52,10 @@ pub(super) fn switching_over() {
 
 /// Start the watchdog. `is_remote` says where input is; `rehook`
 /// reinstalls the hooks.
-pub(super) fn start(is_remote: fn() -> bool, rehook: fn()) {
+pub(super) fn start(is_remote: fn() -> bool, rehook: fn(), remote_control: fn() -> bool) {
     let _ = std::thread::Builder::new()
         .name("da-input-watchdog".into())
-        .spawn(move || watchdog(is_remote, rehook));
+        .spawn(move || watchdog(is_remote, rehook, remote_control));
     tracing::info!(window = %describe(unsafe { GetForegroundWindow() }), "keyboard capture started");
 }
 
@@ -86,7 +86,7 @@ fn move_off_own_window(fg: HWND) {
     }
 }
 
-fn watchdog(is_remote: fn() -> bool, rehook: fn()) {
+fn watchdog(is_remote: fn() -> bool, rehook: fn(), remote_control: fn() -> bool) {
     const POLL: Duration = Duration::from_millis(100);
     const COOLDOWN: Duration = Duration::from_secs(3);
     let mut missed = [0u8; 256];
@@ -109,6 +109,12 @@ fn watchdog(is_remote: fn() -> bool, rehook: fn()) {
             }
         }
         let Some(vk) = culprit else { continue };
+        // During remote screen control our viewer window is meant to have
+        // focus, and it forwards the keys the hook misses itself; moving
+        // focus away would end the session.
+        if remote_control() {
+            continue;
+        }
         let remote = is_remote();
         let fg = unsafe { GetForegroundWindow() };
         // Typing into our own window while input is local is expected to

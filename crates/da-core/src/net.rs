@@ -157,6 +157,8 @@ pub struct Node {
     connector: TlsConnector,
     input_target: Mutex<Option<Arc<dyn crate::input::InputTarget>>>,
     screen_starter: Mutex<Option<crate::remote::ScreenStarter>>,
+    /// Screen sessions this machine is serving right now.
+    pub(crate) viewers: std::sync::atomic::AtomicUsize,
 }
 
 impl Node {
@@ -175,6 +177,7 @@ impl Node {
             connector,
             input_target: Mutex::new(None),
             screen_starter: Mutex::new(None),
+            viewers: Default::default(),
         }))
     }
 
@@ -224,6 +227,12 @@ impl Node {
     /// (tests use a fake source). None uses the real screen.
     pub fn set_screen_starter(&self, starter: Option<crate::remote::ScreenStarter>) {
         *self.screen_starter.lock().unwrap() = starter;
+    }
+
+    /// Someone is viewing (and may be controlling) this screen. Shared
+    /// keyboard and mouse is paused meanwhile, both ways.
+    pub fn being_viewed(&self) -> bool {
+        self.viewers.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 
     pub(crate) fn screen_starter(&self) -> Option<crate::remote::ScreenStarter> {

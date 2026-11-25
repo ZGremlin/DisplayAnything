@@ -65,6 +65,11 @@ impl ScreenHost {
     pub fn request_keyframe(&self) {
         self.inner.request_keyframe();
     }
+
+    /// Where the captured monitor is, for placing the pointer.
+    pub fn bounds(&self) -> Option<crate::DisplayBounds> {
+        self.inner.bounds()
+    }
 }
 
 /// The monitors this computer has, main display first.

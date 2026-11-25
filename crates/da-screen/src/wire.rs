@@ -18,6 +18,8 @@ const TAG_INFO: u8 = 3;
 const TAG_VIDEO: u8 = 4;
 const TAG_ERROR: u8 = 5;
 const TAG_STOP: u8 = 6;
+const TAG_INPUT: u8 = 7;
+const TAG_POINTER: u8 = 8;
 
 const FLAG_KEYFRAME: u8 = 1;
 
@@ -85,6 +87,12 @@ pub enum ViewMsg {
     Error(String),
     /// Either way: end the session.
     Stop,
+    /// Viewer -> host: keyboard and mouse input, as encoded da-input frames
+    /// (keys, buttons, wheel, release-all).
+    Input(Vec<u8>),
+    /// Viewer -> host: put the pointer here, as a fraction of the shared
+    /// screen (0..=65535 on each axis).
+    Pointer { x: u16, y: u16 },
 }
 
 impl ViewMsg {
@@ -95,6 +103,12 @@ impl ViewMsg {
             ViewMsg::Info(i) => (TAG_INFO, serde_json::to_vec(i).unwrap_or_default()),
             ViewMsg::Error(m) => (TAG_ERROR, m.as_bytes().to_vec()),
             ViewMsg::Stop => (TAG_STOP, Vec::new()),
+            ViewMsg::Input(b) => (TAG_INPUT, b.clone()),
+            ViewMsg::Pointer { x, y } => {
+                let mut b = x.to_be_bytes().to_vec();
+                b.extend_from_slice(&y.to_be_bytes());
+                (TAG_POINTER, b)
+            }
             ViewMsg::Video(f) => {
                 // Written in place: frames are big, so skip the extra copy.
                 out.push(TAG_VIDEO);
@@ -131,6 +145,16 @@ impl ViewMsg {
             TAG_INFO => ViewMsg::Info(serde_json::from_slice(body)?),
             TAG_ERROR => ViewMsg::Error(String::from_utf8_lossy(body).into_owned()),
             TAG_STOP => ViewMsg::Stop,
+            TAG_INPUT => ViewMsg::Input(body.to_vec()),
+            TAG_POINTER => {
+                if body.len() < 4 {
+                    bail!("short pointer message");
+                }
+                ViewMsg::Pointer {
+                    x: u16::from_be_bytes([body[0], body[1]]),
+                    y: u16::from_be_bytes([body[2], body[3]]),
+                }
+            }
             TAG_VIDEO => {
                 if body.len() < 9 {
                     bail!("short video frame");
@@ -180,6 +204,8 @@ mod tests {
         }));
         roundtrip(ViewMsg::Error("no permission".into()));
         roundtrip(ViewMsg::Stop);
+        roundtrip(ViewMsg::Input(vec![1, 2, 3]));
+        roundtrip(ViewMsg::Pointer { x: 0, y: 65535 });
     }
 
     #[test]
