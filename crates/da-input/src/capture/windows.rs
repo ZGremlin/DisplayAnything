@@ -109,7 +109,10 @@ pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
                     let _ = UnhookWindowsHookEx(hooks.0);
                     let _ = UnhookWindowsHookEx(hooks.1);
                     match install_hooks(module) {
-                        Ok(h) => hooks = h,
+                        Ok(h) => {
+                            tracing::debug!("input hooks reinstalled");
+                            hooks = h
+                        }
                         Err(e) => tracing::error!("{e:#}"),
                     }
                     continue;
@@ -174,6 +177,11 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     if code == HC_ACTION as i32 {
         if let Some(shared) = SHARED.get() {
             let k = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            if k.flags.0 & LLKHF_INJECTED.0 != 0 && k.dwExtraInfo != crate::INJECTED_MARKER {
+                // Injected by some other program (a remapper, a remote tool):
+                // we pass these through untouched, which matters if keys go missing.
+                tracing::debug!(vk = k.vkCode, "ignoring key injected by another program");
+            }
             if k.flags.0 & LLKHF_INJECTED.0 == 0 {
                 let down = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
                 let usage = if k.vkCode == VK_PAUSE.0 as u32 {
@@ -187,10 +195,17 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                     }
                     keymap::win_to_hid(sc)
                 };
-                if let Some(u) = usage {
-                    if shared.key(u, down) {
-                        return LRESULT(1);
+                match usage {
+                    Some(u) => {
+                        if shared.key(u, down) {
+                            return LRESULT(1);
+                        }
                     }
+                    None => tracing::debug!(
+                        scancode = k.scanCode,
+                        flags = k.flags.0,
+                        "key with no mapping"
+                    ),
                 }
             }
         }

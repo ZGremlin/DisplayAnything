@@ -87,6 +87,9 @@ impl Switcher {
     /// Tell the switcher whether a peer is connected. Losing the peer while
     /// it has input brings input straight back here.
     pub fn set_remote_available(&mut self, available: bool) -> Outcome {
+        if available != self.remote_available {
+            tracing::info!(available, "peer available for input changed");
+        }
         self.remote_available = available;
         if !available && self.target == Target::Remote {
             self.switch_to(Target::Local)
@@ -109,6 +112,7 @@ impl Switcher {
     }
 
     fn switch_to(&mut self, t: Target) -> Outcome {
+        tracing::info!(target = ?t, held = ?self.held, "switching input");
         let mut out = Outcome {
             switched: Some(t),
             ..Default::default()
@@ -129,6 +133,16 @@ impl Switcher {
     pub fn on_key(&mut self, usage: u16, down: bool) -> Outcome {
         if down {
             let first_press = self.held.insert(usage);
+            if self.ctrl_alt_held() && !keymap::is_modifier(usage) {
+                tracing::debug!(
+                    key = format_args!("{usage:#04x}"),
+                    first_press,
+                    target = ?self.target,
+                    remote_available = self.remote_available,
+                    held = ?self.held,
+                    "key with Ctrl+Alt held"
+                );
+            }
             if first_press && self.ctrl_alt_held() {
                 let hk = self.hotkeys;
                 let wanted = if usage == hk.panic {
@@ -145,14 +159,14 @@ impl Switcher {
                 };
                 if let Some(t) = wanted {
                     self.swallowed_hotkeys.insert(usage);
-                    let mut out = if t == self.target {
+                    // The panic key always runs a full switch back here, even
+                    // if input already looks local, so any stuck state (keys,
+                    // hooks, pointer) is reset on both machines.
+                    let mut out = if t == self.target && usage != hk.panic {
                         Outcome::default()
                     } else {
                         self.switch_to(t)
                     };
-                    if usage == hk.panic && out.send.is_empty() {
-                        out.send.push(InputEvent::ReleaseAll);
-                    }
                     // The hotkey itself never reaches either machine.
                     out.release_locally.retain(|&k| k != usage);
                     out.swallow = true;
@@ -296,11 +310,12 @@ mod tests {
         let out = press(&mut s, keymap::ESC);
         assert_eq!(out.switched, Some(Target::Local));
         assert_eq!(out.send, vec![InputEvent::ReleaseAll]);
-        // Already local: still swallowed and still releases the peer.
+        // Already local: still a full reset (swallowed, peer released, and
+        // the platform's switch-back work runs again).
         release(&mut s, keymap::ESC);
         let out = press(&mut s, keymap::ESC);
         assert!(out.swallow);
-        assert_eq!(out.switched, None);
+        assert_eq!(out.switched, Some(Target::Local));
         assert_eq!(out.send, vec![InputEvent::ReleaseAll]);
     }
 

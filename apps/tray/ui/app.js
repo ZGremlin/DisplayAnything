@@ -270,6 +270,7 @@ $("input-peer").addEventListener("change", async (e) => {
 });
 $("use-remote").addEventListener("click", () => invoke("switch_input", { remote: true }).catch((e) => notice(String(e))));
 $("use-local").addEventListener("click", () => invoke("switch_input", { remote: false }).catch((e) => notice(String(e))));
+$("log-btn").addEventListener("click", () => invoke("show_log").catch((e) => notice(String(e))));
 $("rename-btn").addEventListener("click", renameSelf);
 $("name").addEventListener("click", renameSelf);
 $("ax-btn").addEventListener("click", async () => { await invoke("request_accessibility"); setTimeout(loadInput, 1500); });

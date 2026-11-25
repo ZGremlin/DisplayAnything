@@ -640,11 +640,60 @@ fn install_crash_log() {
     }));
 }
 
+/// Log to `da.log` in the data folder (and stderr), so testers can send it.
+/// Started fresh once it passes 5 MB.
+fn init_logging() {
+    use tracing_subscriber::prelude::*;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,da_input=debug,da_core=debug".into());
+    let file = da_core::default_data_dir().ok().and_then(|dir| {
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("da.log");
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
+            let _ = std::fs::remove_file(&path);
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+    });
+    let file_layer = file.map(|f| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(f))
+    });
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(file_layer)
+        .init();
+    tracing::info!("DisplayAnything {} starting", build_id());
+}
+
+/// Show the log file in Explorer / Finder.
+#[tauri::command]
+fn show_log(state: State<'_, AppState>) -> Result<(), String> {
+    let path = state.data_dir.join("da.log");
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .spawn();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open")
+        .arg(path.parent().unwrap_or(&state.data_dir))
+        .spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
 fn main() {
     install_crash_log();
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    init_logging();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -738,7 +787,8 @@ fn main() {
             switch_input,
             request_accessibility,
             rename_device,
-            rename_peer
+            rename_peer,
+            show_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running DisplayAnything");
