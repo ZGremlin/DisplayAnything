@@ -301,7 +301,8 @@ pub async fn open_remote(
                 // Windows: keys typed into the viewer window itself (the
                 // system hook can miss them while our window has focus).
                 #[cfg(windows)]
-                if let (Some(tx), raw_window_handle::RawWindowHandle::Win32(h)) = (&grab, raw) {
+                if let (Some(tx), raw_window_handle::RawWindowHandle::Win32(h)) = (&grab_keys, raw)
+                {
                     da_core::da_input::window_keys::attach(h.hwnd.get(), tx.clone());
                 }
                 #[cfg(not(windows))]
