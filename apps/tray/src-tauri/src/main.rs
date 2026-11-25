@@ -504,7 +504,10 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                     Some(UiEvent::InputChanged)
                 }
                 Event::InputReceiving { peer, active } => {
-                    if active && !da_input::permissions::accessibility_trusted(false) {
+                    if active
+                        && !(da_input::permissions::accessibility_trusted(false)
+                            && da_input::permissions::post_events_granted(false))
+                    {
                         // macOS lets injected mouse moves through without the
                         // permission but silently drops keystrokes.
                         show_main(&app_e);

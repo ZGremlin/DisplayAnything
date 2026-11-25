@@ -51,6 +51,33 @@ pub fn input_monitoring_granted(prompt: bool) -> bool {
     }
 }
 
+/// macOS: whether this app may post synthetic keyboard and mouse events
+/// (the receiving side). macOS checks this separately from the
+/// Accessibility API trust, and without it drops injected keystrokes while
+/// still letting injected mouse moves through. With `prompt`, macOS asks.
+#[cfg(target_os = "macos")]
+pub fn post_events_granted(prompt: bool) -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightPostEventAccess() -> bool;
+        fn CGRequestPostEventAccess() -> bool;
+    }
+    unsafe {
+        if CGPreflightPostEventAccess() {
+            true
+        } else if prompt {
+            CGRequestPostEventAccess()
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn post_events_granted(_prompt: bool) -> bool {
+    true
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn input_monitoring_granted(_prompt: bool) -> bool {
     true
@@ -59,8 +86,9 @@ pub fn input_monitoring_granted(_prompt: bool) -> bool {
 /// Everything keyboard and mouse sharing needs on this OS.
 pub fn input_permissions_ok(prompt: bool) -> bool {
     let ax = accessibility_trusted(prompt);
+    let post = post_events_granted(prompt);
     let listen = input_monitoring_granted(prompt);
-    ax && listen
+    ax && post && listen
 }
 
 #[cfg(not(target_os = "macos"))]
