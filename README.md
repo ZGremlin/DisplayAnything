@@ -63,7 +63,7 @@ These are the defaults. Under **Settings › Shortcuts** you can change each one
 
 The tray menu has the same switch. When input moves, the clipboard text moves with it. On a Mac receiving input from a PC keyboard, Ctrl and the Windows key are swapped so Ctrl+C copies and Ctrl+Space opens Spotlight; turn this off under **Settings › Keys** on the Mac to have the Windows key act as Command instead.
 
-On Windows, the app watches whether its keyboard hook is really getting keys. If Windows sends keys past it (seen on some PCs until focus moved, e.g. by pressing the Windows key), it reinstalls the hook and briefly moves focus to its own invisible window, and logs which window had focus.
+On Windows, while one of DisplayAnything's own windows is in front, Windows hands keys straight to it and the keyboard hook never sees them. So when you switch over from the window (or press a shortcut while it's in front), the app moves focus to the taskbar first. A watchdog also notices when the hook misses keys, reinstalls it, and logs which window had focus.
 
 The receiving computer must allow it: under **Saved devices**, "May control this computer with its keyboard and mouse" (on by default).
 

@@ -179,7 +179,7 @@ fn apply_switch(t: Target, held: &[u16]) {
                 };
                 let _ = SetCursorPos(centre.x, centre.y);
                 *PARK.lock().unwrap() = Some((saved, centre));
-                windows_focus::grab();
+                windows_focus::switching_over();
             }
             Target::Local => {
                 let saved = PARK.lock().unwrap().take();
@@ -197,7 +197,6 @@ fn apply_switch(t: Target, held: &[u16]) {
                         crate::inject::windows_send_key(usage, false);
                     }
                 }
-                windows_focus::restore();
             }
         }
     }
