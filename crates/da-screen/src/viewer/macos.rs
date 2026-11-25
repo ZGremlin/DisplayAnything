@@ -41,6 +41,7 @@ struct Shared {
 /// AVFoundation allows from any thread.
 struct Layer(Retained<AVSampleBufferDisplayLayer>);
 unsafe impl Send for Layer {}
+unsafe impl Sync for Layer {}
 
 pub(super) struct Presenter {
     tx: Mutex<Sender<EncodedFrame>>,

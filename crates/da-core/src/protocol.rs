@@ -21,6 +21,8 @@ pub enum Intent {
     Connect,
     /// Already paired: open the input channel (keyboard and mouse).
     Input,
+    /// Already paired: view (and control) this device's screen.
+    Remote,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

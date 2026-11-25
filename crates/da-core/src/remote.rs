@@ -1,0 +1,327 @@
+//! Remote screen control: the screen stream between a viewer and a host.
+//!
+//! The viewer opens its own TLS connection (intent `remote`) to a paired
+//! host that allows remote control. The host captures and encodes its
+//! screen ([`da_screen::ScreenHost`]) and streams frames as
+//! [`ViewMsg`]s; the viewer asks for keyframes when its decoder needs one.
+//! Like everything else, this is mutual TLS with pinned fingerprints, by IP,
+//! LAN only.
+
+use crate::identity::Fingerprint;
+use crate::net::{send_err, Event, Node};
+use crate::protocol::{read_msg, write_msg, ErrorCode, Intent, Message};
+use crate::trust::TrustedPeer;
+use crate::PROTOCOL_VERSION;
+use anyhow::{anyhow, bail, Context, Result};
+use da_screen::wire::StartRequest;
+use da_screen::{HostOptions, ScreenHost, StreamEvent, ViewMsg};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::time::timeout;
+use tokio_rustls::TlsStream;
+
+/// A running capture as the host sees it: frames arrive through the sink
+/// it was started with, and dropping it stops capture.
+pub trait ScreenSource: Send + Sync {
+    fn request_keyframe(&self);
+}
+
+impl ScreenSource for ScreenHost {
+    fn request_keyframe(&self) {
+        ScreenHost::request_keyframe(self);
+    }
+}
+
+/// Starts a [`ScreenSource`]; see [`Node::set_screen_starter`].
+pub type ScreenStarter =
+    Arc<dyn Fn(HostOptions, da_screen::host::Sink) -> Result<Box<dyn ScreenSource>> + Send + Sync>;
+
+/// If more frames than this are waiting to go out, the network can't keep
+/// up: drop to the next keyframe instead of building a delay.
+const MAX_QUEUED_FRAMES: usize = 3;
+
+/// Read one [`ViewMsg`] at a time from a stream.
+struct MsgReader<R> {
+    r: R,
+    buf: Vec<u8>,
+}
+
+impl<R: AsyncRead + Unpin> MsgReader<R> {
+    fn new(r: R) -> Self {
+        MsgReader {
+            r,
+            buf: Vec::with_capacity(64 * 1024),
+        }
+    }
+
+    /// The next message, or None when the other side closed.
+    async fn next(&mut self) -> Result<Option<ViewMsg>> {
+        let mut chunk = vec![0u8; 64 * 1024];
+        loop {
+            if let Some((msg, used)) = ViewMsg::decode(&self.buf)? {
+                self.buf.drain(..used);
+                return Ok(Some(msg));
+            }
+            let n = self.r.read(&mut chunk).await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            self.buf.extend_from_slice(&chunk[..n]);
+        }
+    }
+}
+
+impl Node {
+    /// Host side: a viewer asked to see (and later control) this screen.
+    pub(crate) async fn serve_remote(
+        &self,
+        mut s: TlsStream<TcpStream>,
+        fp: Fingerprint,
+        addr: SocketAddr,
+    ) -> Result<()> {
+        let Some(peer) = self.trust().get(&fp).cloned() else {
+            return send_err(
+                &mut s,
+                ErrorCode::NotPaired,
+                "this device is not paired with you",
+            )
+            .await;
+        };
+        if !peer.permissions.remote_control {
+            return send_err(
+                &mut s,
+                ErrorCode::NotAllowed,
+                "this device does not allow you to control its screen \
+                 (turn on \"May control this desktop\" for you on that device)",
+            )
+            .await;
+        }
+        let starter = self.screen_starter();
+        if starter.is_none() && !da_screen::platform_supported() {
+            return send_err(
+                &mut s,
+                ErrorCode::NotAllowed,
+                "this device can't share its screen yet",
+            )
+            .await;
+        }
+        write_msg(
+            &mut s,
+            &Message::Welcome {
+                name: self.name(),
+                granted: peer.permissions,
+            },
+        )
+        .await?;
+
+        let (rd, mut wr) = tokio::io::split(s);
+        let mut reader = MsgReader::new(rd);
+        let req = match timeout(Duration::from_secs(10), reader.next()).await?? {
+            Some(ViewMsg::Start(r)) => r,
+            Some(other) => bail!("expected a start request, got {other:?}"),
+            None => return Ok(()),
+        };
+
+        // Start capture off the async threads (macOS waits for the system).
+        let (ev_tx, mut ev_rx) = unbounded_channel::<StreamEvent>();
+        let opts = HostOptions::from(&req);
+        let host = tokio::task::spawn_blocking(move || {
+            let sink: da_screen::host::Sink = Box::new(move |e| {
+                let _ = ev_tx.send(e);
+            });
+            match starter {
+                Some(start) => start(opts, sink),
+                None => ScreenHost::start(opts, sink).map(|h| Box::new(h) as Box<dyn ScreenSource>),
+            }
+        })
+        .await?;
+        let host = match host {
+            Ok(h) => h,
+            Err(e) => {
+                let mut out = Vec::new();
+                ViewMsg::Error(format!("{e:#}")).encode(&mut out);
+                let _ = wr.write_all(&out).await;
+                let _ = wr.flush().await;
+                return Err(e);
+            }
+        };
+        tracing::info!(peer = %peer.name, %addr, "sharing this screen");
+        self.emit(Event::RemoteViewed {
+            peer: peer.name.clone(),
+            active: true,
+        });
+
+        let result: Result<()> = async {
+            let mut out = Vec::with_capacity(256 * 1024);
+            let mut skipping = false;
+            loop {
+                tokio::select! {
+                    msg = reader.next() => match msg? {
+                        Some(ViewMsg::KeyframeRequest) => host.request_keyframe(),
+                        Some(ViewMsg::Stop) | None => return Ok(()),
+                        Some(other) => tracing::debug!("ignoring {other:?} from viewer"),
+                    },
+                    ev = ev_rx.recv() => {
+                        let Some(ev) = ev else { return Ok(()) };
+                        let msg = match ev {
+                            StreamEvent::Info(i) => ViewMsg::Info(i),
+                            StreamEvent::Error(e) => {
+                                out.clear();
+                                ViewMsg::Error(e.clone()).encode(&mut out);
+                                let _ = wr.write_all(&out).await;
+                                let _ = wr.flush().await;
+                                bail!("screen capture stopped: {e}");
+                            }
+                            StreamEvent::Frame(f) => {
+                                // Behind? Drop frames until a fresh keyframe.
+                                if ev_rx.len() >= MAX_QUEUED_FRAMES && !skipping {
+                                    skipping = true;
+                                    host.request_keyframe();
+                                }
+                                if skipping {
+                                    if !f.keyframe {
+                                        continue;
+                                    }
+                                    skipping = false;
+                                }
+                                ViewMsg::Video(f)
+                            }
+                        };
+                        out.clear();
+                        msg.encode(&mut out);
+                        wr.write_all(&out).await?;
+                        wr.flush().await?;
+                    }
+                }
+            }
+        }
+        .await;
+
+        // Stopping capture can block briefly; keep it off the async threads.
+        let _ = tokio::task::spawn_blocking(move || drop(host)).await;
+        self.emit(Event::RemoteViewed {
+            peer: peer.name.clone(),
+            active: false,
+        });
+        tracing::info!(peer = %peer.name, "stopped sharing this screen");
+        result
+    }
+
+    /// Viewer side: open the screen of a paired peer that allows it.
+    pub async fn open_remote(&self, addr: SocketAddr, req: StartRequest) -> Result<RemoteView> {
+        let (mut s, fp, _) = self.dial(addr).await?;
+        let peer = self
+            .trust()
+            .get(&fp)
+            .cloned()
+            .ok_or_else(|| anyhow!("the device at {addr} is not paired with this one"))?;
+        write_msg(
+            &mut s,
+            &Message::Hello {
+                version: PROTOCOL_VERSION,
+                name: self.name(),
+                intent: Intent::Remote,
+            },
+        )
+        .await?;
+        match timeout(Duration::from_secs(10), read_msg(&mut s))
+            .await
+            .context("no answer from the other device")??
+        {
+            Message::Welcome { .. } => {}
+            Message::Error { message, .. } => bail!("{message}"),
+            other => bail!("unexpected reply {other:?}"),
+        }
+        let (rd, mut wr) = tokio::io::split(s);
+        let mut first = Vec::new();
+        ViewMsg::Start(req).encode(&mut first);
+        wr.write_all(&first).await?;
+        wr.flush().await?;
+
+        let (in_tx, in_rx) = unbounded_channel::<ViewMsg>();
+        let (out_tx, mut out_rx) = unbounded_channel::<ViewMsg>();
+        tokio::spawn(async move {
+            let mut reader = MsgReader::new(rd);
+            loop {
+                match reader.next().await {
+                    Ok(Some(m)) => {
+                        if in_tx.send(m).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        tracing::debug!("screen stream ended: {e:#}");
+                        break;
+                    }
+                }
+            }
+        });
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            while let Some(m) = out_rx.recv().await {
+                buf.clear();
+                m.encode(&mut buf);
+                if wr.write_all(&buf).await.is_err() || wr.flush().await.is_err() {
+                    break;
+                }
+                if m == ViewMsg::Stop {
+                    break;
+                }
+            }
+            let _ = wr.shutdown().await;
+        });
+        Ok(RemoteView {
+            peer,
+            rx: in_rx,
+            tx: out_tx,
+        })
+    }
+}
+
+/// An open view of another computer's screen (viewer side).
+pub struct RemoteView {
+    pub peer: TrustedPeer,
+    rx: UnboundedReceiver<ViewMsg>,
+    tx: UnboundedSender<ViewMsg>,
+}
+
+impl RemoteView {
+    /// The next message from the host (stream info, frames, errors), or
+    /// None once the connection closed.
+    pub async fn next(&mut self) -> Option<ViewMsg> {
+        self.rx.recv().await
+    }
+
+    /// A handle for asking for keyframes or stopping from elsewhere.
+    pub fn control(&self) -> RemoteControl {
+        RemoteControl {
+            tx: self.tx.clone(),
+        }
+    }
+}
+
+impl Drop for RemoteView {
+    fn drop(&mut self) {
+        let _ = self.tx.send(ViewMsg::Stop);
+    }
+}
+
+#[derive(Clone)]
+pub struct RemoteControl {
+    tx: UnboundedSender<ViewMsg>,
+}
+
+impl RemoteControl {
+    pub fn request_keyframe(&self) {
+        let _ = self.tx.send(ViewMsg::KeyframeRequest);
+    }
+
+    pub fn stop(&self) {
+        let _ = self.tx.send(ViewMsg::Stop);
+    }
+}

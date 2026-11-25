@@ -882,6 +882,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "da-input",
+ "da-screen",
  "directories",
  "hex",
  "hmac",

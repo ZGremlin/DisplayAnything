@@ -37,3 +37,10 @@ pub struct DisplayInfo {
     pub width: u32,
     pub height: u32,
 }
+
+// Both are handed between threads by da-core and the tray app.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<ScreenHost>();
+    assert_send_sync::<Presenter>();
+};

@@ -273,6 +273,14 @@ async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, opts: ServeOpts) -> Res
                     println!("{name} went offline; will reconnect automatically")
                 }
                 Event::HotkeyRecording(_) => {}
+                Event::RemoteViewed { peer, active } => println!(
+                    "{peer} {} this screen",
+                    if active {
+                        "is now viewing"
+                    } else {
+                        "stopped viewing"
+                    }
+                ),
                 Event::EdgeLocked(l) => {
                     println!("Edge crossing {}", if l { "paused" } else { "resumed" })
                 }
