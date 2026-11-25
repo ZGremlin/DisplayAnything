@@ -271,8 +271,16 @@ fn file_paths() -> Option<Vec<PathBuf>> {
     let mut paths = Vec::new();
     if let Some(items) = pb.pasteboardItems() {
         for item in items.iter() {
-            let url = unsafe { item.stringForType(NSPasteboardTypeFileURL) };
-            if let Some(p) = url.and_then(|u| file_url_to_path(&u.to_string())) {
+            let Some(url) = (unsafe { item.stringForType(NSPasteboardTypeFileURL) }) else {
+                continue;
+            };
+            let url = url.to_string();
+            // Finder can give a file-reference URL (file:///.file/id=...)
+            // instead of a path; ask Foundation for the real path.
+            let path = file_url_to_path(&url)
+                .filter(|p| !p.starts_with("/.file/"))
+                .or_else(|| resolve_file_reference(&url));
+            if let Some(p) = path {
                 paths.push(p);
             }
         }
@@ -291,6 +299,16 @@ fn file_paths() -> Option<Vec<PathBuf>> {
     }
     tracing::info!(count = paths.len(), "pasteboard file list read");
     Some(paths)
+}
+
+/// The real path of a file-reference URL, or None if Foundation can't resolve it.
+#[cfg(target_os = "macos")]
+fn resolve_file_reference(url: &str) -> Option<PathBuf> {
+    use objc2_foundation::{NSString, NSURL};
+    let url = NSURL::URLWithString(&NSString::from_str(url))?;
+    let real = url.filePathURL()?;
+    let path = real.path()?;
+    Some(PathBuf::from(path.to_string()))
 }
 
 /// "file:///a/b%20c.txt" -> "/a/b c.txt"
