@@ -304,6 +304,7 @@ enum Cmd {
     /// A new channel: send frames for the controller here.
     Begin(UnboundedSender<Frame>),
     Options(InjectorOptions),
+    Scale(u16),
     End,
 }
 
@@ -339,6 +340,7 @@ impl PlatformInputTarget {
                         Cmd::Enter { edge, pos, warp } => injector.enter(edge, pos, warp),
                         Cmd::Begin(b) => back = Some(b),
                         Cmd::Options(o) => injector.set_options(o),
+                        Cmd::Scale(p) => injector.set_sender_scale(p),
                         Cmd::End => {
                             injector.release_all();
                             injector.reset_edge();
@@ -372,6 +374,10 @@ impl InputTarget for PlatformInputTarget {
             }
             Frame::Leave { .. } => None, // only travels the other way
             Frame::Active(_) => None,    // handled by the channel itself
+            Frame::Scale(p) => {
+                let _ = self.tx.send(Cmd::Scale(p));
+                None
+            }
             Frame::Input(e) => {
                 let _ = self.tx.send(Cmd::Event(e));
                 None

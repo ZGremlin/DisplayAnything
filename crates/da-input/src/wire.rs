@@ -132,6 +132,10 @@ pub enum Frame {
     /// Controller -> target: the controller started (true) or stopped
     /// (false) sending its keyboard and mouse here.
     Active(bool),
+    /// Controller -> target: the controller's display scaling in percent
+    /// (100 when its pointer moves are already in logical units, as on a
+    /// Mac), so the target can match the pointer speed.
+    Scale(u16),
 }
 
 const T_KEY: u8 = 1;
@@ -144,6 +148,7 @@ const T_CLIP_REQ: u8 = 0x11;
 const T_ENTER: u8 = 0x20;
 const T_LEAVE: u8 = 0x21;
 const T_ACTIVE: u8 = 0x22;
+const T_SCALE: u8 = 0x23;
 
 /// Largest clipboard text we send (1 MiB).
 pub const MAX_CLIPBOARD: usize = 1 << 20;
@@ -193,6 +198,10 @@ impl Frame {
             Frame::Active(on) => {
                 out.push(T_ACTIVE);
                 out.push(*on as u8);
+            }
+            Frame::Scale(pct) => {
+                out.push(T_SCALE);
+                out.extend_from_slice(&pct.to_be_bytes());
             }
         }
     }
@@ -263,9 +272,9 @@ impl Frame {
                 4,
             )),
             T_ACTIVE if need(2) => Some((Frame::Active(buf[1] != 0), 2)),
-            T_KEY | T_MOVE | T_BUTTON | T_WHEEL | T_CLIP_TEXT | T_ENTER | T_LEAVE | T_ACTIVE => {
-                None
-            }
+            T_SCALE if need(3) => Some((Frame::Scale(u16::from_be_bytes([buf[1], buf[2]])), 3)),
+            T_KEY | T_MOVE | T_BUTTON | T_WHEEL | T_CLIP_TEXT | T_ENTER | T_LEAVE | T_ACTIVE
+            | T_SCALE => None,
             other => bail!("unknown input frame tag {other:#x}"),
         })
     }
@@ -345,6 +354,7 @@ mod tests {
         });
         roundtrip(Frame::Active(true));
         roundtrip(Frame::Active(false));
+        roundtrip(Frame::Scale(150));
     }
 
     #[test]

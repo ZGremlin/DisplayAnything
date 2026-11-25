@@ -35,6 +35,9 @@ static SWITCH_JOBS: OnceLock<Mutex<Sender<SwitchJob>>> = OnceLock::new();
 /// The new target, and the keys physically held at the moment of switching.
 type SwitchJob = (Target, Vec<u16>);
 
+/// Largest believable pointer step per mouse event while remote, in pixels.
+const MAX_STEP: i32 = 300;
+
 /// Posted to the hook thread to reinstall both hooks.
 const WM_REHOOK: u32 = WM_APP + 1;
 
@@ -284,8 +287,20 @@ fn handle_mouse(shared: &Shared, msg: u32, m: &MSLLHOOKSTRUCT) -> bool {
                 };
                 return shared.local_move(f64::from(m.pt.x), f64::from(m.pt.y), delta);
             }
-            let park = PARK.lock().unwrap().map(|p| p.1).unwrap_or(m.pt);
-            let (dx, dy) = (m.pt.x - park.x, m.pt.y - park.y);
+            // The move is blocked, so the pointer is still where Windows
+            // last put it: the difference is how far the mouse moved.
+            let mut cur = POINT::default();
+            if unsafe { GetCursorPos(&mut cur) }.is_err() {
+                cur = PARK.lock().unwrap().map(|p| p.1).unwrap_or(m.pt);
+            }
+            let (dx, dy) = (m.pt.x - cur.x, m.pt.y - cur.y);
+            // Right after switching, a few moves can still be relative to
+            // where the pointer was before it was parked; they'd throw the
+            // other computer's pointer across its screen.
+            if dx.abs() > MAX_STEP || dy.abs() > MAX_STEP {
+                tracing::debug!(dx, dy, "dropped a pointer jump while switching");
+                return true;
+            }
             if dx != 0 || dy != 0 {
                 for e in split_move(dx, dy) {
                     shared.mouse(e);
