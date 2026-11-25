@@ -1,8 +1,16 @@
-//! Clipboard access for text and images. Images cross the wire as PNG.
+//! Clipboard access for text, images and files. Images cross the wire as
+//! PNG; files as their names and contents.
 
 use crate::wire::{Frame, MAX_CLIPBOARD_IMAGE};
 use anyhow::{anyhow, bail, Result};
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Largest total size of files we send (100 MiB).
+pub const MAX_FILES_SENT: usize = 100 << 20;
+/// How many received batches to keep in the temporary folder.
+const KEEP_RECEIVED: usize = 5;
 
 /// What the clipboard holds, in a form that can cross the wire.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10,6 +18,8 @@ pub enum Clip {
     Text(String),
     /// A PNG-encoded image.
     Png(Vec<u8>),
+    /// Files: (file name, contents).
+    Files(Vec<(String, Vec<u8>)>),
 }
 
 impl Clip {
@@ -17,6 +27,7 @@ impl Clip {
         match self {
             Clip::Text(t) => t.is_empty(),
             Clip::Png(b) => b.is_empty(),
+            Clip::Files(f) => f.is_empty(),
         }
     }
 
@@ -24,13 +35,19 @@ impl Clip {
         match self {
             Clip::Text(t) => Frame::ClipboardText(t),
             Clip::Png(b) => Frame::ClipboardImage(b),
+            Clip::Files(f) => Frame::ClipboardFiles(f),
         }
     }
 }
 
-/// This machine's clipboard to send: its text if it has any, otherwise its
+/// This machine's clipboard to send: files if it has any, then text, then an
 /// image. None if there is nothing we can send.
 pub fn get() -> Option<Clip> {
+    if let Some(paths) = file_paths() {
+        if !paths.is_empty() {
+            return read_files(&paths);
+        }
+    }
     let mut c = arboard::Clipboard::new().ok()?;
     if let Ok(t) = c.get_text() {
         if !t.is_empty() {
@@ -63,6 +80,7 @@ pub fn set(clip: &Clip) {
     let result = match clip {
         Clip::Text(t) => c.set_text(t.clone()).map_err(anyhow::Error::from),
         Clip::Png(b) => decode_png(b).and_then(|img| c.set_image(img).map_err(anyhow::Error::from)),
+        Clip::Files(files) => receive_files(files).and_then(|paths| set_file_paths(&paths)),
     };
     if let Err(e) = result {
         tracing::debug!("could not set the clipboard: {e:#}");
@@ -101,9 +119,167 @@ fn decode_png(bytes: &[u8]) -> Result<arboard::ImageData<'static>> {
     })
 }
 
+/// Read the files a copy put on the clipboard, if any.
+fn read_files(paths: &[PathBuf]) -> Option<Clip> {
+    let mut files = Vec::new();
+    let mut total = 0usize;
+    for p in paths {
+        let Ok(meta) = std::fs::metadata(p) else {
+            continue;
+        };
+        if !meta.is_file() {
+            tracing::info!(path = %p.display(), "folders are not shared yet; skipping");
+            continue;
+        }
+        total += meta.len() as usize;
+        if total > MAX_FILES_SENT {
+            tracing::info!(total, "files on the clipboard are too large to send");
+            return None;
+        }
+        let Ok(data) = std::fs::read(p) else { continue };
+        let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        files.push((name, data));
+    }
+    (!files.is_empty()).then_some(Clip::Files(files))
+}
+
+/// Write received files to a fresh folder and return their paths, so they
+/// can be put on the clipboard for pasting.
+fn receive_files(files: &[(String, Vec<u8>)]) -> Result<Vec<PathBuf>> {
+    let root = std::env::temp_dir().join("DisplayAnything-received");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let dir = root.join(stamp.to_string());
+    std::fs::create_dir_all(&dir)?;
+    let mut out = Vec::with_capacity(files.len());
+    for (i, (name, data)) in files.iter().enumerate() {
+        let mut path = dir.join(safe_name(name));
+        if path.exists() {
+            path = dir.join(format!("{i}-{}", safe_name(name)));
+        }
+        std::fs::write(&path, data)?;
+        out.push(path);
+    }
+    prune_received(&root);
+    Ok(out)
+}
+
+/// A file name from the other computer, reduced to a plain name.
+fn safe_name(name: &str) -> String {
+    Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .unwrap_or("file")
+        .to_string()
+}
+
+/// Remove all but the newest received batches.
+fn prune_received(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut dirs: Vec<(u128, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let stamp = e.file_name().to_str()?.parse::<u128>().ok()?;
+            Some((stamp, e.path()))
+        })
+        .collect();
+    dirs.sort();
+    let extra = dirs.len().saturating_sub(KEEP_RECEIVED);
+    for (_, path) in dirs.into_iter().take(extra) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[cfg(windows)]
+fn file_paths() -> Option<Vec<PathBuf>> {
+    let names: Vec<String> = clipboard_win::get_clipboard(clipboard_win::formats::FileList).ok()?;
+    Some(names.into_iter().map(PathBuf::from).collect())
+}
+
+#[cfg(windows)]
+fn set_file_paths(paths: &[PathBuf]) -> Result<()> {
+    use clipboard_win::Setter;
+    let names: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let _clip = clipboard_win::Clipboard::new_attempts(10).map_err(|e| anyhow!("{e}"))?;
+    clipboard_win::formats::FileList
+        .write_clipboard(&names[..])
+        .map_err(|e| anyhow!("{e}"))
+}
+
+// NSFilenamesPboardType is deprecated by Apple, but it is still the type
+// Finder and the other apps use for copied files.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn file_paths() -> Option<Vec<PathBuf>> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{NSFilenamesPboardType, NSPasteboard};
+    use objc2_foundation::{NSArray, NSString};
+    let pb = NSPasteboard::generalPasteboard();
+    let plist: Retained<AnyObject> = pb.propertyListForType(unsafe { NSFilenamesPboardType })?;
+    let list: Retained<NSArray> = plist.downcast().ok()?;
+    Some(
+        list.iter()
+            .filter_map(|o| {
+                o.downcast_ref::<NSString>()
+                    .map(|s| PathBuf::from(s.to_string()))
+            })
+            .collect(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn set_file_paths(paths: &[PathBuf]) -> Result<()> {
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSFilenamesPboardType, NSPasteboard};
+    use objc2_foundation::{NSArray, NSString};
+    let items: Vec<Retained<NSString>> = paths
+        .iter()
+        .map(|p| NSString::from_str(&p.to_string_lossy()))
+        .collect();
+    let list = NSArray::from_retained_slice(&items);
+    let pb = NSPasteboard::generalPasteboard();
+    pb.clearContents();
+    let ok = unsafe { pb.setPropertyList_forType(&list, NSFilenamesPboardType) };
+    if ok {
+        Ok(())
+    } else {
+        bail!("the pasteboard refused the files")
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn file_paths() -> Option<Vec<PathBuf>> {
+    None
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn set_file_paths(_paths: &[PathBuf]) -> Result<()> {
+    bail!("files on the clipboard are not supported on this system")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn received_names_cannot_leave_their_folder() {
+        assert_eq!(safe_name("../../evil.txt"), "evil.txt");
+        assert_eq!(safe_name(".."), "file");
+        assert_eq!(safe_name(""), "file");
+        assert_eq!(safe_name("photo.jpg"), "photo.jpg");
+    }
 
     #[test]
     fn png_round_trips_pixels() {

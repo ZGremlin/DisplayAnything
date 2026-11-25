@@ -226,6 +226,10 @@ impl InputLink {
                             used += len;
                             let _ = clip_tx.send(Clip::Png(png));
                         }
+                        Ok(Some((Frame::ClipboardFiles(files), len))) => {
+                            used += len;
+                            let _ = clip_tx.send(Clip::Files(files));
+                        }
                         Ok(Some((Frame::Leave { pos, .. }, len))) => {
                             used += len;
                             if let Some(f) = on_leave_r.lock().unwrap().as_ref() {
@@ -393,6 +397,10 @@ impl InputTarget for PlatformInputTarget {
             }
             Frame::ClipboardImage(png) => {
                 let _ = self.tx.send(Cmd::SetClip(Clip::Png(png)));
+                None
+            }
+            Frame::ClipboardFiles(files) => {
+                let _ = self.tx.send(Cmd::SetClip(Clip::Files(files)));
                 None
             }
             Frame::ClipboardRequest => Some(

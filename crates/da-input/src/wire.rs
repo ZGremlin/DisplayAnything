@@ -138,6 +138,8 @@ pub enum Frame {
     Scale(u16),
     /// Like `ClipboardText`, for an image: PNG bytes.
     ClipboardImage(Vec<u8>),
+    /// Files copied on the controller: (file name, contents).
+    ClipboardFiles(Vec<(String, Vec<u8>)>),
 }
 
 const T_KEY: u8 = 1;
@@ -152,12 +154,16 @@ const T_LEAVE: u8 = 0x21;
 const T_ACTIVE: u8 = 0x22;
 const T_SCALE: u8 = 0x23;
 const T_CLIP_IMG: u8 = 0x12;
+const T_CLIP_FILES: u8 = 0x13;
 
 /// Largest clipboard text we send (1 MiB).
 pub const MAX_CLIPBOARD: usize = 1 << 20;
 
 /// Largest clipboard image we send, as PNG (16 MiB).
 pub const MAX_CLIPBOARD_IMAGE: usize = 16 << 20;
+
+/// Largest total size of files we accept in one clipboard transfer (128 MiB).
+pub const MAX_CLIPBOARD_FILES: usize = 128 << 20;
 
 impl Frame {
     pub fn encode(&self, out: &mut Vec<u8>) {
@@ -193,6 +199,18 @@ impl Frame {
                 out.push(T_CLIP_IMG);
                 out.extend_from_slice(&(png.len() as u32).to_be_bytes());
                 out.extend_from_slice(png);
+            }
+            Frame::ClipboardFiles(files) => {
+                out.push(T_CLIP_FILES);
+                out.extend_from_slice(&(files.len() as u16).to_be_bytes());
+                for (name, data) in files {
+                    let name = name.as_bytes();
+                    let name = &name[..name.len().min(u16::MAX as usize)];
+                    out.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                    out.extend_from_slice(name);
+                    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                    out.extend_from_slice(data);
+                }
             }
             Frame::ClipboardRequest => out.push(T_CLIP_REQ),
             Frame::Enter { edge, pos, warp } => {
@@ -267,6 +285,49 @@ impl Frame {
                 let text = String::from_utf8_lossy(&buf[5..5 + len]).into_owned();
                 Some((Frame::ClipboardText(text), 5 + len))
             }
+            T_CLIP_FILES if need(3) => {
+                let count = u16::from_be_bytes([buf[1], buf[2]]) as usize;
+                // First pass: walk the headers to find the frame's end, so an
+                // incomplete frame is not copied again on every read.
+                let mut pos = 3;
+                let mut total = 0usize;
+                for _ in 0..count {
+                    if !need(pos + 2) {
+                        return Ok(None);
+                    }
+                    let nlen = u16::from_be_bytes([buf[pos], buf[pos + 1]]) as usize;
+                    pos += 2 + nlen;
+                    if !need(pos + 4) {
+                        return Ok(None);
+                    }
+                    let dlen =
+                        u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]])
+                            as usize;
+                    pos += 4 + dlen;
+                    total += dlen;
+                    if total > MAX_CLIPBOARD_FILES {
+                        bail!("clipboard files too large ({total} bytes)");
+                    }
+                }
+                if !need(pos) {
+                    return Ok(None);
+                }
+                // Second pass: copy the files out.
+                let mut files = Vec::with_capacity(count);
+                let mut at = 3;
+                for _ in 0..count {
+                    let nlen = u16::from_be_bytes([buf[at], buf[at + 1]]) as usize;
+                    at += 2;
+                    let name = String::from_utf8_lossy(&buf[at..at + nlen]).into_owned();
+                    at += nlen;
+                    let dlen = u32::from_be_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]])
+                        as usize;
+                    at += 4;
+                    files.push((name, buf[at..at + dlen].to_vec()));
+                    at += dlen;
+                }
+                Some((Frame::ClipboardFiles(files), pos))
+            }
             T_CLIP_IMG if need(5) => {
                 let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
                 if len > MAX_CLIPBOARD_IMAGE {
@@ -295,7 +356,7 @@ impl Frame {
             T_ACTIVE if need(2) => Some((Frame::Active(buf[1] != 0), 2)),
             T_SCALE if need(3) => Some((Frame::Scale(u16::from_be_bytes([buf[1], buf[2]])), 3)),
             T_KEY | T_MOVE | T_BUTTON | T_WHEEL | T_CLIP_TEXT | T_ENTER | T_LEAVE | T_ACTIVE
-            | T_SCALE | T_CLIP_IMG => None,
+            | T_SCALE | T_CLIP_IMG | T_CLIP_FILES => None,
             other => bail!("unknown input frame tag {other:#x}"),
         })
     }
@@ -377,6 +438,10 @@ mod tests {
         roundtrip(Frame::Active(false));
         roundtrip(Frame::Scale(150));
         roundtrip(Frame::ClipboardImage(vec![0x89, b'P', b'N', b'G', 1]));
+        roundtrip(Frame::ClipboardFiles(vec![
+            ("notes.txt".into(), b"hello".to_vec()),
+            ("empty".into(), Vec::new()),
+        ]));
     }
 
     #[test]
