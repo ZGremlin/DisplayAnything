@@ -220,21 +220,36 @@ impl InputLink {
                     match Frame::decode(&buf[used..]) {
                         Ok(Some((Frame::ClipboardText(t), len))) => {
                             used += len;
-                            let _ = clip_tx.send(Clip::Text(t));
-                            tracing::info!("clipboard text received from the other computer");
+                            let clip = Clip::Text(t);
+                            tracing::info!(
+                                "switch {}: received {} hash={:016x}",
+                                clipboard::current_switch(),
+                                clipboard::describe(&clip),
+                                clipboard::fingerprint(&clip)
+                            );
+                            let _ = clip_tx.send(clip);
                         }
                         Ok(Some((Frame::ClipboardImage(png), len))) => {
                             used += len;
-                            let _ = clip_tx.send(Clip::Png(png));
-                            tracing::info!("clipboard image received from the other computer");
+                            let clip = Clip::Png(png);
+                            tracing::info!(
+                                "switch {}: received {} hash={:016x}",
+                                clipboard::current_switch(),
+                                clipboard::describe(&clip),
+                                clipboard::fingerprint(&clip)
+                            );
+                            let _ = clip_tx.send(clip);
                         }
                         Ok(Some((Frame::ClipboardFiles(files), len))) => {
                             used += len;
+                            let clip = Clip::Files(files);
                             tracing::info!(
-                                "clipboard files received from the other computer: {} file(s)",
-                                files.len()
+                                "switch {}: received {} hash={:016x}",
+                                clipboard::current_switch(),
+                                clipboard::describe(&clip),
+                                clipboard::fingerprint(&clip)
                             );
-                            let _ = clip_tx.send(Clip::Files(files));
+                            let _ = clip_tx.send(clip);
                         }
                         Ok(Some((Frame::Leave { pos, .. }, len))) => {
                             used += len;

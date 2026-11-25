@@ -5,7 +5,16 @@ use crate::wire::{Frame, MAX_CLIPBOARD_IMAGE};
 use anyhow::{anyhow, bail, Result};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Counts clipboard changes seen on this machine, from a local copy or from
+/// the other computer. Logged so two machines' logs can be read side by side.
+static CHANGES: AtomicU64 = AtomicU64::new(0);
+/// Fingerprint of the clipboard as last read to send.
+static LAST_READ: AtomicU64 = AtomicU64::new(0);
+/// The current switch, counted per machine. Logged with each switch line.
+static SWITCHES: AtomicU64 = AtomicU64::new(0);
 
 /// Largest total size of files we send (100 MiB).
 pub const MAX_FILES_SENT: usize = 100 << 20;
@@ -13,7 +22,7 @@ pub const MAX_FILES_SENT: usize = 100 << 20;
 const KEEP_RECEIVED: usize = 5;
 
 /// What the clipboard holds, in a form that can cross the wire.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Clip {
     Text(String),
     /// A PNG-encoded image.
@@ -53,15 +62,55 @@ pub fn describe(clip: &Clip) -> String {
     }
 }
 
+/// A short fingerprint of a clip, so the same content can be matched across
+/// two machines' logs.
+pub fn fingerprint(clip: &Clip) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    clip.hash(&mut h);
+    h.finish()
+}
+
+/// Starts a new switch and returns its number. Logged on this machine only.
+pub fn begin_switch(direction: &str) -> u64 {
+    let n = SWITCHES.fetch_add(1, Ordering::SeqCst) + 1;
+    tracing::info!("switch {n}: {direction}");
+    n
+}
+
+/// The number of the current switch on this machine.
+pub fn current_switch() -> u64 {
+    SWITCHES.load(Ordering::SeqCst)
+}
+
 /// This machine's clipboard to send: files if it has any, then text, then an
 /// image. None if there is nothing we can send.
 pub fn get() -> Option<Clip> {
     let clip = read_clipboard();
     match &clip {
-        Some(c) => tracing::info!("clipboard read to send: {}", describe(c)),
-        None => tracing::info!("clipboard read to send: nothing"),
+        Some(c) => {
+            let fp = fingerprint(c);
+            log_change_if_new("local copy", fp, c);
+            tracing::info!(
+                "switch {}: read to send {} hash={fp:016x}",
+                current_switch(),
+                describe(c)
+            );
+        }
+        None => tracing::info!("switch {}: read to send nothing", current_switch()),
     }
     clip
+}
+
+/// Logs a clipboard change when its content differs from the last one seen.
+fn log_change_if_new(source: &str, fp: u64, clip: &Clip) {
+    if LAST_READ.swap(fp, Ordering::SeqCst) != fp {
+        let n = CHANGES.fetch_add(1, Ordering::SeqCst) + 1;
+        tracing::info!(
+            "clipboard change #{n}: {source}, {} hash={fp:016x}",
+            describe(clip)
+        );
+    }
 }
 
 fn read_clipboard() -> Option<Clip> {
@@ -98,6 +147,13 @@ fn read_clipboard() -> Option<Clip> {
 
 /// Put something received from the other computer on this clipboard.
 pub fn set(clip: &Clip) {
+    let fp = fingerprint(clip);
+    let n = CHANGES.fetch_add(1, Ordering::SeqCst) + 1;
+    LAST_READ.store(fp, Ordering::SeqCst);
+    tracing::info!(
+        "clipboard change #{n}: from the other computer, {} hash={fp:016x}",
+        describe(clip)
+    );
     let mut c = match arboard::Clipboard::new() {
         Ok(c) => c,
         Err(e) => {
