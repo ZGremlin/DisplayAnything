@@ -61,3 +61,4 @@ h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted, inherit); text-tra
 .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin-bottom: 10px; }
 .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
 @media (max-width: 480px) { .hk-row { flex-wrap: wrap; } .hk-row .hk-name { flex-basis: 100%; } }
+#speed { width: 100%; margin: 6px 0 2px; }

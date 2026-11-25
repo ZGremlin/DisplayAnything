@@ -44,6 +44,22 @@ struct Settings {
     /// Command/Windows keys (so a PC's Ctrl+C copies on a Mac).
     #[serde(default = "default_swap")]
     swap_ctrl_meta: bool,
+    /// Pointer speed for the other computer's mouse, in percent.
+    #[serde(default = "default_speed")]
+    pointer_speed: u16,
+}
+
+fn default_speed() -> u16 {
+    100
+}
+
+impl Settings {
+    fn injector_options(&self) -> InjectorOptions {
+        InjectorOptions {
+            swap_ctrl_meta: self.swap_ctrl_meta,
+            pointer_speed: f64::from(self.pointer_speed.clamp(25, 400)) / 100.0,
+        }
+    }
 }
 
 fn default_swap() -> bool {
@@ -62,6 +78,7 @@ impl Default for Settings {
             logging: true,
             edge: None,
             swap_ctrl_meta: default_swap(),
+            pointer_speed: default_speed(),
         }
     }
 }
@@ -985,12 +1002,29 @@ fn get_swap(state: State<'_, AppState>) -> bool {
 #[tauri::command]
 fn set_swap(state: State<'_, AppState>, on: bool) {
     tracing::info!(on, "Ctrl/Command swap changed");
-    if let Some(t) = &state.input_target {
-        t.set_options(InjectorOptions { swap_ctrl_meta: on });
-    }
     let mut s = state.settings.lock().unwrap();
     s.swap_ctrl_meta = on;
     s.save(&state.data_dir);
+    if let Some(t) = &state.input_target {
+        t.set_options(s.injector_options());
+    }
+}
+
+#[tauri::command]
+fn get_pointer_speed(state: State<'_, AppState>) -> u16 {
+    state.settings.lock().unwrap().pointer_speed
+}
+
+#[tauri::command]
+fn set_pointer_speed(state: State<'_, AppState>, percent: u16) {
+    let percent = percent.clamp(25, 400);
+    tracing::info!(percent, "pointer speed changed");
+    let mut s = state.settings.lock().unwrap();
+    s.pointer_speed = percent;
+    s.save(&state.data_dir);
+    if let Some(t) = &state.input_target {
+        t.set_options(s.injector_options());
+    }
 }
 
 #[tauri::command]
@@ -1076,9 +1110,7 @@ fn main() {
             let settings = Settings::load(&data_dir);
 
             // Let paired devices with permission drive this computer.
-            let input_target = match PlatformInputTarget::new(InjectorOptions {
-                swap_ctrl_meta: settings.swap_ctrl_meta,
-            }) {
+            let input_target = match PlatformInputTarget::new(settings.injector_options()) {
                 Ok(t) => {
                     node.set_input_target(Some(t.clone()));
                     // On macOS, ask for Accessibility up front: without it the
@@ -1169,6 +1201,8 @@ fn main() {
             set_logging,
             get_swap,
             set_swap,
+            get_pointer_speed,
+            set_pointer_speed,
             get_edge,
             set_edge,
             set_edge_locked

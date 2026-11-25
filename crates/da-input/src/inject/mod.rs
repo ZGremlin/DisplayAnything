@@ -29,6 +29,9 @@ pub struct InjectorOptions {
     /// Swap Ctrl and Command/Windows keys, so Ctrl+C on a PC keyboard is
     /// Command+C on a Mac. On by default when this machine is a Mac.
     pub swap_ctrl_meta: bool,
+    /// Multiplier for pointer movement from the other computer (1.0 = as
+    /// sent), so its mouse can feel the same speed on this screen.
+    pub pointer_speed: f64,
 }
 
 #[allow(clippy::derivable_impls)] // the default depends on the OS
@@ -36,6 +39,7 @@ impl Default for InjectorOptions {
     fn default() -> Self {
         InjectorOptions {
             swap_ctrl_meta: cfg!(target_os = "macos"),
+            pointer_speed: 1.0,
         }
     }
 }
@@ -86,6 +90,8 @@ pub struct Injector {
     held_keys: HashSet<u16>,
     held_buttons: HashSet<MouseButton>,
     edge: EdgeReturn,
+    /// Leftover fractions of a pixel from pointer speed scaling.
+    frac: (f64, f64),
 }
 
 /// Pushes past the edge needed before input goes back (a deliberate shove,
@@ -112,6 +118,7 @@ impl Injector {
             held_keys: HashSet::new(),
             held_buttons: HashSet::new(),
             edge: EdgeReturn::default(),
+            frac: (0.0, 0.0),
         })
     }
 
@@ -188,6 +195,20 @@ impl Injector {
         }
     }
 
+    /// Apply the pointer speed, carrying fractions over so slow movements
+    /// aren't lost at low speeds.
+    fn scale_move(&mut self, dx: i16, dy: i16) -> (i32, i32) {
+        let s = self.opts.pointer_speed;
+        if (s - 1.0).abs() < f64::EPSILON {
+            return (i32::from(dx), i32::from(dy));
+        }
+        let x = f64::from(dx) * s + self.frac.0;
+        let y = f64::from(dy) * s + self.frac.1;
+        let (ix, iy) = (x.trunc(), y.trunc());
+        self.frac = (x - ix, y - iy);
+        (ix as i32, iy as i32)
+    }
+
     fn map_key(&self, usage: u16) -> u16 {
         if !self.opts.swap_ctrl_meta {
             return usage;
@@ -204,14 +225,23 @@ impl Injector {
     /// Replay one event. Returns a frame to send back to the controller when
     /// the pointer was pushed out over its edge.
     pub fn inject(&mut self, ev: &InputEvent) -> Option<Frame> {
-        if let InputEvent::MouseMove { dx, dy } = *ev {
-            let leave = self.check_leave(dx as i32, dy as i32);
+        let mut ev = *ev;
+        if let InputEvent::MouseMove { dx, dy } = ev {
+            let (dx, dy) = self.scale_move(dx, dy);
+            if dx == 0 && dy == 0 {
+                return None;
+            }
+            ev = InputEvent::MouseMove {
+                dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                dy: dy.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+            };
+            let leave = self.check_leave(dx, dy);
             if leave.is_some() {
                 // The controller takes input back; don't move further here.
                 return leave;
             }
         }
-        match *ev {
+        match ev {
             InputEvent::Key { usage, down } => {
                 let usage = self.map_key(usage);
                 if down {
@@ -296,12 +326,36 @@ mod tests {
             backend: Box::new(log.clone()),
             opts: InjectorOptions {
                 swap_ctrl_meta: swap,
+                pointer_speed: 1.0,
             },
+            frac: (0.0, 0.0),
             held_keys: HashSet::new(),
             held_buttons: HashSet::new(),
             edge: EdgeReturn::default(),
         };
         (inj, log)
+    }
+
+    #[test]
+    fn pointer_speed_scales_moves_and_keeps_fractions() {
+        let (mut inj, log) = injector(false);
+        inj.set_options(InjectorOptions {
+            swap_ctrl_meta: false,
+            pointer_speed: 0.5,
+        });
+        inj.inject(&InputEvent::MouseMove { dx: 10, dy: -4 });
+        // Half of 1 twice adds up to one pixel instead of being lost.
+        inj.inject(&InputEvent::MouseMove { dx: 1, dy: 0 });
+        inj.inject(&InputEvent::MouseMove { dx: 1, dy: 0 });
+        let moves: Vec<String> = log
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("move"))
+            .cloned()
+            .collect();
+        assert_eq!(moves, vec!["move 5 -2", "move 1 0"]);
     }
 
     #[test]

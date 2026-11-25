@@ -405,6 +405,8 @@ $("edge").addEventListener("change", async (e) => { await invoke("set_edge", { e
 $("edge-locked").addEventListener("change", (e) => invoke("set_edge_locked", { locked: e.target.checked }));
 $("logging").addEventListener("change", (e) => invoke("set_logging", { on: e.target.checked }));
 $("swap").addEventListener("change", (e) => invoke("set_swap", { on: e.target.checked }));
+$("speed").addEventListener("input", (e) => ($("speed-val").textContent = `${e.target.value}%`));
+$("speed").addEventListener("change", (e) => invoke("set_pointer_speed", { percent: Number(e.target.value) }));
 $("log-btn2").addEventListener("click", () => invoke("show_log").catch((e) => notice(String(e))));
 $("log-btn").addEventListener("click", () => invoke("show_log").catch((e) => notice(String(e))));
 $("rename-btn").addEventListener("click", renameSelf);
@@ -442,5 +444,6 @@ loadHotkeys();
 loadEdge();
 invoke("get_logging").then((on) => ($("logging").checked = on));
 invoke("get_swap").then((on) => ($("swap").checked = on));
+invoke("get_pointer_speed").then((p) => { $("speed").value = p; $("speed-val").textContent = `${p}%`; });
 // Accessibility can be granted in System Settings while we are open.
 setInterval(loadInput, 5000);
