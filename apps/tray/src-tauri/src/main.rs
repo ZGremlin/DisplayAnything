@@ -3,6 +3,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod remote;
+
 use da_core::da_input::{self, Combo, Edge, Hotkeys, InjectorOptions, Recording, Target};
 use da_core::{
     discovery, AutoConnector, Config, Event, Fingerprint, Identity, InputShare, Node, Permissions,
@@ -604,6 +606,13 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                 }),
                 Event::HotkeyRecording(Recording::Done(combo)) => finish_recording(&state, combo),
                 Event::EdgeLocked(_) => Some(UiEvent::EdgeChanged),
+                Event::RemoteViewed { peer, active } => Some(UiEvent::Notice {
+                    text: if active {
+                        format!("{peer} is viewing this screen. Close its window there to stop.")
+                    } else {
+                        format!("{peer} stopped viewing this screen.")
+                    },
+                }),
                 Event::SessionClosed { .. } | Event::Listening { .. } | Event::Rejected { .. } => {
                     None
                 }
@@ -1101,6 +1110,7 @@ fn main() {
                 let _ = std::fs::write(&marker, b"1");
             }
 
+            app.manage(remote::Viewers::default());
             app.manage(AppState {
                 node: node.clone(),
                 data_dir,
@@ -1136,6 +1146,15 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label().starts_with(remote::WINDOW_PREFIX) {
+                // Closing a remote screen window ends that session.
+                if let WindowEvent::Destroyed = event {
+                    window
+                        .state::<remote::Viewers>()
+                        .window_closed(window.label());
+                }
+                return;
+            }
             // Closing the window keeps the app running in the tray.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
@@ -1171,7 +1190,8 @@ fn main() {
             set_swap,
             get_edge,
             set_edge,
-            set_edge_locked
+            set_edge_locked,
+            remote::open_remote
         ])
         .run(tauri::generate_context!())
         .expect("error while running DisplayAnything");

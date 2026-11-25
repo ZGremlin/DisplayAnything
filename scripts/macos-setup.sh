@@ -77,9 +77,10 @@ xattr -cr "$APP"
 say "Re-signing locally (ad hoc)"
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "   (re-sign skipped; continuing)"
 
-say "Clearing old permission grants (Accessibility, Input Monitoring)"
+say "Clearing old permission grants (Accessibility, Input Monitoring, Screen Recording)"
 tccutil reset Accessibility "$BUNDLE_ID" >/dev/null 2>&1 || true
 tccutil reset ListenEvent   "$BUNDLE_ID" >/dev/null 2>&1 || true
+tccutil reset ScreenCapture "$BUNDLE_ID" >/dev/null 2>&1 || true
 
 say "Opening DisplayAnything (it will ask for Accessibility)"
 open "$APP"
@@ -89,6 +90,8 @@ say "Opening the Input Monitoring and Accessibility pages in System Settings"
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent" || true
 sleep 1
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" || true
+sleep 1
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" || true
 
 BUILD="$(stat -f '%Sm' "$APP/Contents/MacOS/da-tray" 2>/dev/null || echo unknown)"
 echo
@@ -101,6 +104,8 @@ Last step (macOS only lets you do this by hand):
   Input Monitoring (macOS asks for each; the keyboard needs both, the mouse
   works without them). If you can't find a page, type its name into the
   System Settings search box.
+  To let another computer see this Mac's screen (remote control), also switch
+  DisplayAnything ON under Screen Recording.
   Then quit DisplayAnything from its tray icon and open it again.
 
 Done.

@@ -283,6 +283,20 @@ async function loadPeers() {
       }));
     const actions = document.createElement("div");
     actions.className = "actions";
+    if (p.online) {
+      // Opens a window showing that computer's screen (it must allow
+      // "May control this desktop" for this computer).
+      const control = document.createElement("button");
+      control.textContent = "Control screen";
+      control.title = "Open a window showing this device's screen";
+      control.addEventListener("click", async () => {
+        control.disabled = true;
+        try { await invoke("open_remote", { fingerprint: p.fingerprint }); notice(""); }
+        catch (e) { notice(String(e)); }
+        finally { control.disabled = false; }
+      });
+      actions.append(control);
+    }
     actions.append(rename, forget);
     head.append(title, actions);
 
