@@ -330,6 +330,33 @@ fn file_paths() -> Option<Vec<PathBuf>> {
     Some(names.into_iter().map(PathBuf::from).collect())
 }
 
+/// Adds the "Preferred DropEffect" format with DROPEFFECT_COPY. The clipboard
+/// must already be open and emptied by this thread.
+#[cfg(windows)]
+fn add_copy_drop_effect() -> Result<()> {
+    use windows::core::w;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::DataExchange::{RegisterClipboardFormatW, SetClipboardData};
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    const DROPEFFECT_COPY: u32 = 1;
+    unsafe {
+        let format = RegisterClipboardFormatW(w!("Preferred DropEffect"));
+        if format == 0 {
+            bail!("could not register the drop effect format");
+        }
+        let mem = GlobalAlloc(GMEM_MOVEABLE, std::mem::size_of::<u32>())?;
+        let ptr = GlobalLock(mem) as *mut u32;
+        if ptr.is_null() {
+            bail!("could not lock memory for the drop effect");
+        }
+        *ptr = DROPEFFECT_COPY;
+        let _ = GlobalUnlock(mem);
+        // The system owns the memory once SetClipboardData succeeds.
+        SetClipboardData(format, HANDLE(mem.0 as _))?;
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn set_file_paths(paths: &[PathBuf]) -> Result<()> {
     use clipboard_win::Setter;
@@ -339,9 +366,18 @@ fn set_file_paths(paths: &[PathBuf]) -> Result<()> {
         .collect();
     let result = {
         let _clip = clipboard_win::Clipboard::new_attempts(10).map_err(|e| anyhow!("{e}"))?;
-        clipboard_win::formats::FileList
+        let written = clipboard_win::formats::FileList
             .write_clipboard(&names[..])
-            .map_err(|e| anyhow!("{e}"))
+            .map_err(|e| anyhow!("{e}"));
+        // Explorer also expects "Preferred DropEffect" (copy) next to the file
+        // list, as it puts there on a copy. Without it Explorer may not offer
+        // Paste.
+        if written.is_ok() {
+            if let Err(e) = add_copy_drop_effect() {
+                tracing::info!("could not add the copy drop effect: {e:#}");
+            }
+        }
+        written
     };
     // Read the clipboard back, now that it is closed, to confirm the file list
     // is really there and the files still exist.
