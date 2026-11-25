@@ -188,18 +188,24 @@ impl InputShare {
                         l.send(Frame::Active(true));
                     }
                     if let (Some(l), Some(clip)) = (&link, da_input::clipboard::get()) {
-                        tracing::info!(
-                            "switch {}: sent {} hash={:016x}",
-                            da_input::clipboard::current_switch(),
-                            da_input::clipboard::describe(&clip),
-                            da_input::clipboard::fingerprint(&clip)
-                        );
                         // Only send what changed since we last synced, so an
                         // old copy here does not overwrite the other machine's
                         // newer copy.
                         if !clip.is_empty() && !da_input::clipboard::is_synced(&clip) {
+                            tracing::info!(
+                                "switch {}: sent {} hash={:016x}",
+                                da_input::clipboard::current_switch(),
+                                da_input::clipboard::describe(&clip),
+                                da_input::clipboard::fingerprint(&clip)
+                            );
                             da_input::clipboard::mark_synced(&clip);
                             l.send(clip.into_frame());
+                        } else {
+                            tracing::info!(
+                                "switch {}: not sent, already synced hash={:016x}",
+                                da_input::clipboard::current_switch(),
+                                da_input::clipboard::fingerprint(&clip)
+                            );
                         }
                     }
                     let peer = link.map(|l| l.peer.name.clone());

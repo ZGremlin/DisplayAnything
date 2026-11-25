@@ -113,6 +113,13 @@ impl Node {
                 while let Some((frame, len)) = Frame::decode(&buf[used..])? {
                     used += len;
                     if let Frame::Active(active) = frame {
+                        // Count the switch on this machine too, so both logs
+                        // carry a switch number for the same switch.
+                        clipboard::begin_switch(if active {
+                            "control comes here"
+                        } else {
+                            "control leaves here"
+                        });
                         self.emit(Event::InputControlled {
                             peer: peer.name.clone(),
                             active,
