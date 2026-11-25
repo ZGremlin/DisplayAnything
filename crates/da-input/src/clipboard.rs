@@ -250,10 +250,30 @@ fn set_file_paths(paths: &[PathBuf]) -> Result<()> {
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
-    let _clip = clipboard_win::Clipboard::new_attempts(10).map_err(|e| anyhow!("{e}"))?;
-    clipboard_win::formats::FileList
-        .write_clipboard(&names[..])
-        .map_err(|e| anyhow!("{e}"))
+    let result = {
+        let _clip = clipboard_win::Clipboard::new_attempts(10).map_err(|e| anyhow!("{e}"))?;
+        clipboard_win::formats::FileList
+            .write_clipboard(&names[..])
+            .map_err(|e| anyhow!("{e}"))
+    };
+    // Read the clipboard back, now that it is closed, to confirm the file list
+    // is really there and the files still exist.
+    let exist = paths.iter().filter(|p| p.exists()).count();
+    match clipboard_win::get_clipboard::<Vec<String>, _>(clipboard_win::formats::FileList) {
+        Ok(back) => tracing::info!(
+            written = names.len(),
+            exist,
+            read_back = back.len(),
+            first = back.first().map(String::as_str).unwrap_or(""),
+            "clipboard file list read back"
+        ),
+        Err(e) => tracing::info!(
+            written = names.len(),
+            exist,
+            "clipboard file list read back failed: {e}"
+        ),
+    }
+    result
 }
 
 // NSFilenamesPboardType is deprecated by Apple, but it is still the type
