@@ -12,6 +12,7 @@ use crate::protocol::{read_msg, write_msg, ErrorCode, Intent, Message};
 use crate::trust::TrustedPeer;
 use crate::PROTOCOL_VERSION;
 use anyhow::{anyhow, bail, Result};
+use da_input::clipboard::{self, Clip};
 use da_input::{Frame, InjectorOptions, InputEvent};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,7 +172,7 @@ impl Node {
 pub struct InputLink {
     pub peer: TrustedPeer,
     tx: UnboundedSender<Frame>,
-    clipboard: tokio::sync::Mutex<UnboundedReceiver<String>>,
+    clipboard: tokio::sync::Mutex<UnboundedReceiver<Clip>>,
     closed: Arc<AtomicBool>,
     on_leave: LeaveHandler,
 }
@@ -182,7 +183,7 @@ impl InputLink {
     fn spawn(s: TlsStream<TcpStream>, peer: TrustedPeer) -> Self {
         let (mut rd, mut wr) = tokio::io::split(s);
         let (tx, mut rx) = unbounded_channel::<Frame>();
-        let (clip_tx, clip_rx) = unbounded_channel::<String>();
+        let (clip_tx, clip_rx) = unbounded_channel::<Clip>();
         let closed = Arc::new(AtomicBool::new(false));
 
         let closed_w = closed.clone();
@@ -219,7 +220,11 @@ impl InputLink {
                     match Frame::decode(&buf[used..]) {
                         Ok(Some((Frame::ClipboardText(t), len))) => {
                             used += len;
-                            let _ = clip_tx.send(t);
+                            let _ = clip_tx.send(Clip::Text(t));
+                        }
+                        Ok(Some((Frame::ClipboardImage(png), len))) => {
+                            used += len;
+                            let _ = clip_tx.send(Clip::Png(png));
                         }
                         Ok(Some((Frame::Leave { pos, .. }, len))) => {
                             used += len;
@@ -268,8 +273,8 @@ impl InputLink {
         self.send(Frame::Input(e))
     }
 
-    /// Ask the peer for its clipboard text.
-    pub async fn request_clipboard(&self, wait: Duration) -> Option<String> {
+    /// Ask the peer for its clipboard (text or an image).
+    pub async fn request_clipboard(&self, wait: Duration) -> Option<Clip> {
         let mut rx = self.clipboard.lock().await;
         while rx.try_recv().is_ok() {} // drop stale replies
         if !self.send(Frame::ClipboardRequest) {
@@ -295,7 +300,7 @@ pub struct PlatformInputTarget {
 
 enum Cmd {
     Event(InputEvent),
-    SetClipboard(String),
+    SetClip(Clip),
     Enter {
         edge: da_input::Edge,
         pos: u16,
@@ -336,7 +341,7 @@ impl PlatformInputTarget {
                                 }
                             }
                         }
-                        Cmd::SetClipboard(t) => da_input::clipboard::set_text(&t),
+                        Cmd::SetClip(c) => clipboard::set(&c),
                         Cmd::Enter { edge, pos, warp } => injector.enter(edge, pos, warp),
                         Cmd::Begin(b) => back = Some(b),
                         Cmd::Options(o) => injector.set_options(o),
@@ -383,12 +388,18 @@ impl InputTarget for PlatformInputTarget {
                 None
             }
             Frame::ClipboardText(t) => {
-                let _ = self.tx.send(Cmd::SetClipboard(t));
+                let _ = self.tx.send(Cmd::SetClip(Clip::Text(t)));
                 None
             }
-            Frame::ClipboardRequest => Some(Frame::ClipboardText(
-                da_input::clipboard::get_text().unwrap_or_default(),
-            )),
+            Frame::ClipboardImage(png) => {
+                let _ = self.tx.send(Cmd::SetClip(Clip::Png(png)));
+                None
+            }
+            Frame::ClipboardRequest => Some(
+                clipboard::get()
+                    .unwrap_or(Clip::Text(String::new()))
+                    .into_frame(),
+            ),
         }
     }
 

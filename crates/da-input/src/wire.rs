@@ -136,6 +136,8 @@ pub enum Frame {
     /// (100 when its pointer moves are already in logical units, as on a
     /// Mac), so the target can match the pointer speed.
     Scale(u16),
+    /// Like `ClipboardText`, for an image: PNG bytes.
+    ClipboardImage(Vec<u8>),
 }
 
 const T_KEY: u8 = 1;
@@ -149,9 +151,13 @@ const T_ENTER: u8 = 0x20;
 const T_LEAVE: u8 = 0x21;
 const T_ACTIVE: u8 = 0x22;
 const T_SCALE: u8 = 0x23;
+const T_CLIP_IMG: u8 = 0x12;
 
 /// Largest clipboard text we send (1 MiB).
 pub const MAX_CLIPBOARD: usize = 1 << 20;
+
+/// Largest clipboard image we send, as PNG (16 MiB).
+pub const MAX_CLIPBOARD_IMAGE: usize = 16 << 20;
 
 impl Frame {
     pub fn encode(&self, out: &mut Vec<u8>) {
@@ -182,6 +188,11 @@ impl Frame {
                 out.push(T_CLIP_TEXT);
                 out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
                 out.extend_from_slice(bytes);
+            }
+            Frame::ClipboardImage(png) => {
+                out.push(T_CLIP_IMG);
+                out.extend_from_slice(&(png.len() as u32).to_be_bytes());
+                out.extend_from_slice(png);
             }
             Frame::ClipboardRequest => out.push(T_CLIP_REQ),
             Frame::Enter { edge, pos, warp } => {
@@ -256,6 +267,16 @@ impl Frame {
                 let text = String::from_utf8_lossy(&buf[5..5 + len]).into_owned();
                 Some((Frame::ClipboardText(text), 5 + len))
             }
+            T_CLIP_IMG if need(5) => {
+                let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                if len > MAX_CLIPBOARD_IMAGE {
+                    bail!("clipboard image too large ({len} bytes)");
+                }
+                if !need(5 + len) {
+                    return Ok(None);
+                }
+                Some((Frame::ClipboardImage(buf[5..5 + len].to_vec()), 5 + len))
+            }
             T_ENTER if need(5) => Some((
                 Frame::Enter {
                     edge: Edge::from_u8(buf[1])?,
@@ -274,7 +295,7 @@ impl Frame {
             T_ACTIVE if need(2) => Some((Frame::Active(buf[1] != 0), 2)),
             T_SCALE if need(3) => Some((Frame::Scale(u16::from_be_bytes([buf[1], buf[2]])), 3)),
             T_KEY | T_MOVE | T_BUTTON | T_WHEEL | T_CLIP_TEXT | T_ENTER | T_LEAVE | T_ACTIVE
-            | T_SCALE => None,
+            | T_SCALE | T_CLIP_IMG => None,
             other => bail!("unknown input frame tag {other:#x}"),
         })
     }
@@ -355,6 +376,7 @@ mod tests {
         roundtrip(Frame::Active(true));
         roundtrip(Frame::Active(false));
         roundtrip(Frame::Scale(150));
+        roundtrip(Frame::ClipboardImage(vec![0x89, b'P', b'N', b'G', 1]));
     }
 
     #[test]

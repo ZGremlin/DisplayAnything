@@ -186,8 +186,8 @@ impl InputShare {
                         l.send(Frame::Scale(da_input::inject::pointer_scale_percent()));
                         l.send(Frame::Active(true));
                     }
-                    if let (Some(l), Some(text)) = (&link, da_input::clipboard::get_text()) {
-                        l.send(Frame::ClipboardText(text));
+                    if let (Some(l), Some(clip)) = (&link, da_input::clipboard::get()) {
+                        l.send(clip.into_frame());
                     }
                     let peer = link.map(|l| l.peer.name.clone());
                     self.node.emit(Event::InputTargetChanged { peer });
@@ -197,9 +197,9 @@ impl InputShare {
                     if let Some(l) = self.current_link() {
                         l.send(Frame::Active(false));
                         tokio::spawn(async move {
-                            if let Some(text) = l.request_clipboard(CLIPBOARD_WAIT).await {
-                                if !text.is_empty() {
-                                    da_input::clipboard::set_text(&text);
+                            if let Some(clip) = l.request_clipboard(CLIPBOARD_WAIT).await {
+                                if !clip.is_empty() {
+                                    da_input::clipboard::set(&clip);
                                 }
                             }
                         });
