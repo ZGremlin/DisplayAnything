@@ -40,6 +40,14 @@ struct Settings {
     /// over by pushing the pointer past that edge (None = off).
     #[serde(default)]
     edge: Option<Edge>,
+    /// When another computer controls this one, swap its Ctrl and
+    /// Command/Windows keys (so a PC's Ctrl+C copies on a Mac).
+    #[serde(default = "default_swap")]
+    swap_ctrl_meta: bool,
+}
+
+fn default_swap() -> bool {
+    InjectorOptions::default().swap_ctrl_meta
 }
 
 fn default_true() -> bool {
@@ -53,6 +61,7 @@ impl Default for Settings {
             hotkeys: None,
             logging: true,
             edge: None,
+            swap_ctrl_meta: default_swap(),
         }
     }
 }
@@ -82,10 +91,14 @@ struct AppState {
     share: Mutex<Option<Arc<InputShare>>>,
     input_error: Mutex<Option<String>>,
     receiving_from: Mutex<Option<String>>,
+    /// Name of a peer actively controlling this computer right now.
+    controlled_by: Mutex<Option<String>>,
     /// mDNS advertisement; replaced when this device is renamed.
     advertiser: Mutex<Option<discovery::Advertiser>>,
     /// Which hotkey action is being recorded right now.
     recording_action: Mutex<Option<String>>,
+    /// Replays input from other computers here.
+    input_target: Option<Arc<PlatformInputTarget>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -96,8 +109,10 @@ struct InputStatus {
     peer_fingerprint: Option<String>,
     share: Option<ShareStatus>,
     error: Option<String>,
-    /// Name of a peer currently driving this computer.
+    /// Name of a peer connected to this computer's keyboard and mouse.
     receiving_from: Option<String>,
+    /// Name of a peer actively controlling this computer right now.
+    controlled_by: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -376,6 +391,7 @@ fn input_status_of(state: &AppState) -> InputStatus {
         share: state.share.lock().unwrap().as_ref().map(|s| s.status()),
         error: state.input_error.lock().unwrap().clone(),
         receiving_from: state.receiving_from.lock().unwrap().clone(),
+        controlled_by: state.controlled_by.lock().unwrap().clone(),
     }
 }
 
@@ -570,7 +586,14 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                             },
                         );
                     }
+                    if !active {
+                        *state.controlled_by.lock().unwrap() = None;
+                    }
                     *state.receiving_from.lock().unwrap() = active.then_some(peer);
+                    Some(UiEvent::InputChanged)
+                }
+                Event::InputControlled { peer, active } => {
+                    *state.controlled_by.lock().unwrap() = active.then_some(peer);
                     Some(UiEvent::InputChanged)
                 }
                 Event::PeerRenamed { .. } => Some(UiEvent::PeersChanged),
@@ -587,9 +610,11 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
             };
             let n = state.online.lock().unwrap().len();
             let share_status = state.share.lock().unwrap().as_ref().map(|s| s.status());
-            let input_connected = share_status.as_ref().is_some_and(|s| s.connected)
-                || state.receiving_from.lock().unwrap().is_some();
-            update_tray_icon(&app_e, input_connected);
+            // Green only while control is actually shared: this computer is
+            // driving the other one, or the other one is driving this one.
+            let sharing = share_status.as_ref().is_some_and(|s| s.remote_active)
+                || state.controlled_by.lock().unwrap().is_some();
+            update_tray_icon(&app_e, sharing);
             let remote_peer = state
                 .share
                 .lock()
@@ -614,8 +639,8 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
     });
 }
 
-/// The tray / menu bar icon: green with a check mark while a keyboard and
-/// mouse link is up in either direction.
+/// The tray / menu bar icon: green with a check mark while keyboard and
+/// mouse control is being shared in either direction.
 fn tray_icon(connected: bool) -> Option<tauri::image::Image<'static>> {
     let bytes: &[u8] = if connected {
         include_bytes!("../icons/tray-connected.png")
@@ -637,6 +662,17 @@ fn update_tray_icon(app: &AppHandle, connected: bool) {
     }
 }
 
+/// The tray's "switch" items, greyed out while edge crossing is the mode.
+static TRAY_SWITCH_ITEMS: std::sync::OnceLock<(MenuItem<tauri::Wry>, MenuItem<tauri::Wry>)> =
+    std::sync::OnceLock::new();
+
+fn update_tray_switch_items(edge_mode: bool) {
+    if let Some((switch, home)) = TRAY_SWITCH_ITEMS.get() {
+        let _ = switch.set_enabled(!edge_mode);
+        let _ = home.set_enabled(!edge_mode);
+    }
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open DisplayAnything", true, None::<&str>)?;
     let switch = MenuItem::with_id(
@@ -655,6 +691,15 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &switch, &home, &quit])?;
+    let _ = TRAY_SWITCH_ITEMS.set((switch, home));
+    let edge_mode = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .unwrap()
+        .edge
+        .is_some();
+    update_tray_switch_items(edge_mode);
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("DisplayAnything")
         .menu(&menu)
@@ -876,6 +921,7 @@ fn set_edge(state: State<'_, AppState>, edge: Option<Edge>) {
     if let Some(share) = state.share.lock().unwrap().clone() {
         share.set_edge(edge);
     }
+    update_tray_switch_items(edge.is_some());
 }
 
 #[tauri::command]
@@ -929,6 +975,22 @@ fn set_logging_enabled(on: bool) {
         *f = open_log_file();
     }
     LOG_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn get_swap(state: State<'_, AppState>) -> bool {
+    state.settings.lock().unwrap().swap_ctrl_meta
+}
+
+#[tauri::command]
+fn set_swap(state: State<'_, AppState>, on: bool) {
+    tracing::info!(on, "Ctrl/Command swap changed");
+    if let Some(t) = &state.input_target {
+        t.set_options(InjectorOptions { swap_ctrl_meta: on });
+    }
+    let mut s = state.settings.lock().unwrap();
+    s.swap_ctrl_meta = on;
+    s.save(&state.data_dir);
 }
 
 #[tauri::command]
@@ -1014,15 +1076,21 @@ fn main() {
             let settings = Settings::load(&data_dir);
 
             // Let paired devices with permission drive this computer.
-            match PlatformInputTarget::new(InjectorOptions::default()) {
+            let input_target = match PlatformInputTarget::new(InjectorOptions {
+                swap_ctrl_meta: settings.swap_ctrl_meta,
+            }) {
                 Ok(t) => {
-                    node.set_input_target(Some(t));
+                    node.set_input_target(Some(t.clone()));
                     // On macOS, ask for Accessibility up front: without it the
                     // keyboard does not work when another computer drives this one.
                     da_input::permissions::input_permissions_ok(true);
+                    Some(t)
                 }
-                Err(e) => tracing::warn!("receiving input is unavailable: {e:#}"),
-            }
+                Err(e) => {
+                    tracing::warn!("receiving input is unavailable: {e:#}");
+                    None
+                }
+            };
 
             // Start at login by default, once; after that the user's choice stands.
             let marker = data_dir.join(AUTOSTART_SET_MARKER);
@@ -1043,8 +1111,10 @@ fn main() {
                 share: Mutex::new(None),
                 input_error: Mutex::new(None),
                 receiving_from: Mutex::new(None),
+                controlled_by: Mutex::new(None),
                 advertiser: Mutex::new(None),
                 recording_action: Mutex::new(None),
+                input_target,
             });
             build_tray(app)?;
             start_background(app.handle(), node);
@@ -1097,6 +1167,8 @@ fn main() {
             reset_hotkeys,
             get_logging,
             set_logging,
+            get_swap,
+            set_swap,
             get_edge,
             set_edge,
             set_edge_locked

@@ -182,6 +182,9 @@ impl InputShare {
                 }
                 ControllerMsg::Switched(Target::Remote) => {
                     let link = self.current_link();
+                    if let Some(l) = &link {
+                        l.send(Frame::Active(true));
+                    }
                     if let (Some(l), Some(text)) = (&link, da_input::clipboard::get_text()) {
                         l.send(Frame::ClipboardText(text));
                     }
@@ -191,6 +194,7 @@ impl InputShare {
                 ControllerMsg::Switched(Target::Local) => {
                     self.node.emit(Event::InputTargetChanged { peer: None });
                     if let Some(l) = self.current_link() {
+                        l.send(Frame::Active(false));
                         tokio::spawn(async move {
                             if let Some(text) = l.request_clipboard(CLIPBOARD_WAIT).await {
                                 if !text.is_empty() {

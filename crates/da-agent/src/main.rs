@@ -301,6 +301,10 @@ async fn serve(node: Arc<Node>, bind: IpAddr, port: u16, opts: ServeOpts) -> Res
                         "stopped driving"
                     }
                 ),
+                Event::InputControlled { peer, active } => println!(
+                    "{peer} {} controlling this computer",
+                    if active { "started" } else { "stopped" }
+                ),
             }
         }
     });

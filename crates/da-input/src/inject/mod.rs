@@ -115,6 +115,13 @@ impl Injector {
         })
     }
 
+    /// Change the options. Anything held is released first, so a key
+    /// pressed under the old mapping can't be released under the new one.
+    pub fn set_options(&mut self, opts: InjectorOptions) {
+        self.release_all();
+        self.opts = opts;
+    }
+
     fn screens(&mut self) -> &[Rect] {
         let stale = self
             .edge

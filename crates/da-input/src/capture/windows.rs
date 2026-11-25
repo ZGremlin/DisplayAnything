@@ -4,6 +4,7 @@
 //! screen and every move is blocked; the distance the OS *would* have moved
 //! it is the delta we forward. Events we injected ourselves are ignored.
 
+use super::windows_focus;
 use super::Shared;
 use crate::keymap;
 use crate::switcher::Target;
@@ -125,7 +126,22 @@ pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
         })?;
     ready_rx
         .recv()
-        .map_err(|_| anyhow!("input hook thread exited"))?
+        .map_err(|_| anyhow!("input hook thread exited"))??;
+    windows_focus::start(
+        || SHARED.get().is_some_and(|s| s.is_remote()),
+        request_rehook,
+    );
+    Ok(())
+}
+
+/// Ask the hook thread to reinstall both hooks.
+fn request_rehook() {
+    let tid = HOOK_THREAD.load(Ordering::SeqCst);
+    if tid != 0 {
+        unsafe {
+            let _ = PostThreadMessageW(tid, WM_REHOOK, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 /// Whether Windows thinks this key is held (None if we can't tell).
@@ -163,6 +179,7 @@ fn apply_switch(t: Target, held: &[u16]) {
                 };
                 let _ = SetCursorPos(centre.x, centre.y);
                 *PARK.lock().unwrap() = Some((saved, centre));
+                windows_focus::grab();
             }
             Target::Local => {
                 let saved = PARK.lock().unwrap().take();
@@ -180,19 +197,21 @@ fn apply_switch(t: Target, held: &[u16]) {
                         crate::inject::windows_send_key(usage, false);
                     }
                 }
+                windows_focus::restore();
             }
         }
-        let tid = HOOK_THREAD.load(Ordering::SeqCst);
-        if tid != 0 {
-            let _ = PostThreadMessageW(tid, WM_REHOOK, WPARAM(0), LPARAM(0));
-        }
     }
+    request_rehook();
 }
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         if let Some(shared) = SHARED.get() {
             let k = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            windows_focus::hook_saw(
+                k.vkCode,
+                matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN),
+            );
             if k.flags.0 & LLKHF_INJECTED.0 != 0 && k.dwExtraInfo != crate::INJECTED_MARKER {
                 // Injected by some other program (a remapper, a remote tool):
                 // we pass these through untouched, which matters if keys go missing.

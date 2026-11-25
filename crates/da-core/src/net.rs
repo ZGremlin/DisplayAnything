@@ -99,6 +99,12 @@ pub enum Event {
         peer: String,
         active: bool,
     },
+    /// A connected peer started (true) or stopped (false) actually
+    /// controlling this machine with its keyboard and mouse.
+    InputControlled {
+        peer: String,
+        active: bool,
+    },
     /// Edge crossing was paused (true) or resumed (false).
     EdgeLocked(bool),
     /// Progress while recording a new hotkey combination.

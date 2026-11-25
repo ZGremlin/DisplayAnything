@@ -57,11 +57,13 @@ On the computer whose keyboard and mouse you want to use, open the tray window a
 | Ctrl+Alt+← | Ctrl+Option+← | Bring them back |
 | Ctrl+Alt+Esc | Ctrl+Option+Esc | Always bring them back, even if the link is broken |
 
-These are the defaults. Under **Settings › Shortcuts** you can change each one: click **Change**, then press and hold any keys and/or mouse buttons (for example Ctrl + Mouse Back) for 2 seconds. Using the same combination for switching over and coming back makes it a toggle. The tray icon turns green with a check mark while a keyboard and mouse link is up.
+These are the defaults. Under **Settings › Shortcuts** you can change each one: click **Change**, then press and hold any keys and/or mouse buttons (for example Ctrl + Mouse Back) for 2 seconds. Using the same combination for switching over and coming back makes it a toggle. The tray icon turns green with a check mark while one computer is actually controlling the other (on both of them), not merely connected.
 
-**Edge crossing:** under **Settings › Edge crossing**, say which side the other computer is on (for example "to the left"). Then push the pointer a little past that edge of your screens and it carries on onto the other computer at the matching height, with the keyboard following; push it back out the other side to return. It won't cross while you're dragging something, and Ctrl+Alt+L (changeable) pauses it for games or presenting. Set the opposite side on the other computer to cross the other way too.
+**Edge crossing:** it is a switching mode of its own. Under **Settings › How to switch**, pick which side the other computer is on (for example "to the left"); the switching shortcuts and buttons are turned off in this mode, and the "always come back" shortcut still works. Then push the pointer a little past that edge of your screens and it carries on onto the other computer at the matching height, with the keyboard following; push it back out the other side to return. It won't cross while you're dragging something, and Ctrl+Alt+L (changeable) pauses it for games or presenting. Set the opposite side on the other computer to cross the other way too.
 
-The tray menu has the same switch. When input moves, the clipboard text moves with it. On a Mac receiving input from a PC keyboard, Ctrl and the Windows key are swapped so Ctrl+C copies.
+The tray menu has the same switch. When input moves, the clipboard text moves with it. On a Mac receiving input from a PC keyboard, Ctrl and the Windows key are swapped so Ctrl+C copies and Ctrl+Space opens Spotlight; turn this off under **Settings › Keys** on the Mac to have the Windows key act as Command instead.
+
+On Windows, the app watches whether its keyboard hook is really getting keys. If Windows sends keys past it (seen on some PCs until focus moved, e.g. by pressing the Windows key), it reinstalls the hook and briefly moves focus to its own invisible window, and logs which window had focus.
 
 The receiving computer must allow it: under **Saved devices**, "May control this computer with its keyboard and mouse" (on by default).
 

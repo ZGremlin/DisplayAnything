@@ -54,6 +54,7 @@ h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted, inherit); text-tra
 .hk-row .hk-name { flex: 1; min-width: 0; }
 .hk-combo { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; justify-content: flex-end; }
 .hk-row.recording { opacity: .5; }
+.hk-row.off { opacity: .45; }
 .recorder { margin: 8px 0; padding: 12px; border: 1px dashed var(--accent); border-radius: 8px; }
 .recorder p { margin: 0 0 8px; }
 .hk-live { display: flex; flex-wrap: wrap; gap: 3px; min-height: 22px; align-items: center; }

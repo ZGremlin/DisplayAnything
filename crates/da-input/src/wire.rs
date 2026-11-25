@@ -129,6 +129,9 @@ pub enum Frame {
         edge: Edge,
         pos: u16,
     },
+    /// Controller -> target: the controller started (true) or stopped
+    /// (false) sending its keyboard and mouse here.
+    Active(bool),
 }
 
 const T_KEY: u8 = 1;
@@ -140,6 +143,7 @@ const T_CLIP_TEXT: u8 = 0x10;
 const T_CLIP_REQ: u8 = 0x11;
 const T_ENTER: u8 = 0x20;
 const T_LEAVE: u8 = 0x21;
+const T_ACTIVE: u8 = 0x22;
 
 /// Largest clipboard text we send (1 MiB).
 pub const MAX_CLIPBOARD: usize = 1 << 20;
@@ -185,6 +189,10 @@ impl Frame {
                 out.push(T_LEAVE);
                 out.push(edge.to_u8());
                 out.extend_from_slice(&pos.to_be_bytes());
+            }
+            Frame::Active(on) => {
+                out.push(T_ACTIVE);
+                out.push(*on as u8);
             }
         }
     }
@@ -254,7 +262,10 @@ impl Frame {
                 },
                 4,
             )),
-            T_KEY | T_MOVE | T_BUTTON | T_WHEEL | T_CLIP_TEXT | T_ENTER | T_LEAVE => None,
+            T_ACTIVE if need(2) => Some((Frame::Active(buf[1] != 0), 2)),
+            T_KEY | T_MOVE | T_BUTTON | T_WHEEL | T_CLIP_TEXT | T_ENTER | T_LEAVE | T_ACTIVE => {
+                None
+            }
             other => bail!("unknown input frame tag {other:#x}"),
         })
     }
@@ -332,6 +343,8 @@ mod tests {
             edge: Edge::Top,
             pos: 1,
         });
+        roundtrip(Frame::Active(true));
+        roundtrip(Frame::Active(false));
     }
 
     #[test]

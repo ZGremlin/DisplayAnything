@@ -45,7 +45,8 @@
         <button type="button" id="use-local" class="secondary">Use on this computer</button>
         <button type="button" id="use-remote">Use on <span id="peer-name-btn"></span></button>
       </div>
-      <p class="muted">Shortcuts: <span id="hint-remote"></span> switch over, <span id="hint-local"></span> come back, <span id="hint-panic"></span> always returns here. Change them under Settings.</p>
+      <p class="muted" id="hint-keys">Shortcuts: <span id="hint-remote"></span> switch over, <span id="hint-local"></span> come back, <span id="hint-panic"></span> always returns here. Change them under Settings.</p>
+      <p class="muted" id="hint-edge" hidden>Edge crossing is on: push the pointer past the <span id="hint-side"></span> edge of your screens to move over, and back out the other side to return. <span id="hint-panic2"></span> always returns here.</p>
     </div>
     <p id="input-error" class="muted"></p>
   </section>
@@ -75,6 +76,19 @@
 
   <section class="card" id="settings-card">
     <h2>Settings</h2>
+    <h3>How to switch</h3>
+    <label for="edge">Move between computers with</label>
+    <select id="edge">
+      <option value="">Shortcuts and buttons</option>
+      <option value="left">Edge crossing: the other computer is to the left</option>
+      <option value="right">Edge crossing: the other computer is to the right</option>
+      <option value="top">Edge crossing: the other computer is above</option>
+      <option value="bottom">Edge crossing: the other computer is below</option>
+    </select>
+    <div class="perms" id="edge-opts">
+      <label><input type="checkbox" id="edge-locked"> Paused for now (for games or presenting)</label>
+    </div>
+    <p class="muted" id="mode-note"></p>
     <h3>Shortcuts</h3>
     <div class="hk-row" data-action="to_remote">
       <span class="hk-name">Switch to the other computer</span>
@@ -105,19 +119,11 @@
     <p id="hk-msg" class="muted"></p>
     <p class="muted">Keys and mouse buttons both work, for example Ctrl + Mouse Back. Using the same combination for switching over and coming back makes it a toggle.
       <button type="button" class="link" id="hk-reset">Reset to defaults</button></p>
-    <h3>Edge crossing</h3>
-    <label for="edge">Move to the other computer by pushing the pointer past the edge of my screens</label>
-    <select id="edge">
-      <option value="">Off (use the shortcuts only)</option>
-      <option value="left">The other computer is to the left</option>
-      <option value="right">The other computer is to the right</option>
-      <option value="top">The other computer is above</option>
-      <option value="bottom">The other computer is below</option>
-    </select>
+    <h3>Keys</h3>
     <div class="perms">
-      <label><input type="checkbox" id="edge-locked"> Paused for now (for games or presenting)</label>
+      <label><input type="checkbox" id="swap"> When another computer controls this one, swap Ctrl and Command/Windows</label>
     </div>
-    <p class="muted">Set this on the computer whose keyboard and mouse you're using. Push a little past the edge to cross; it won't cross while you're dragging something. Set the opposite side on the other computer to cross back the other way too.</p>
+    <p class="muted">Set this on the computer being controlled. On a Mac it's on by default, so a PC's Ctrl+C and Ctrl+V copy and paste, and Ctrl+Space opens Spotlight. Turn it off to have the Windows key act as Command instead.</p>
     <h3>Troubleshooting</h3>
     <div class="perms">
       <label><input type="checkbox" id="logging"> Keep a log file (helps track down problems)</label>

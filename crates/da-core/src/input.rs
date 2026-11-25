@@ -111,6 +111,13 @@ impl Node {
                 let mut used = 0;
                 while let Some((frame, len)) = Frame::decode(&buf[used..])? {
                     used += len;
+                    if let Frame::Active(active) = frame {
+                        self.emit(Event::InputControlled {
+                            peer: peer.name.clone(),
+                            active,
+                        });
+                        continue;
+                    }
                     if let Some(r) = target.frame(&peer, frame) {
                         reply.clear();
                         r.encode(&mut reply);
@@ -123,6 +130,10 @@ impl Node {
         }
         .await;
         target.end(&peer);
+        self.emit(Event::InputControlled {
+            peer: peer.name.clone(),
+            active: false,
+        });
         self.emit(Event::InputReceiving {
             peer: peer.name.clone(),
             active: false,
@@ -292,6 +303,7 @@ enum Cmd {
     },
     /// A new channel: send frames for the controller here.
     Begin(UnboundedSender<Frame>),
+    Options(InjectorOptions),
     End,
 }
 
@@ -326,6 +338,7 @@ impl PlatformInputTarget {
                         Cmd::SetClipboard(t) => da_input::clipboard::set_text(&t),
                         Cmd::Enter { edge, pos, warp } => injector.enter(edge, pos, warp),
                         Cmd::Begin(b) => back = Some(b),
+                        Cmd::Options(o) => injector.set_options(o),
                         Cmd::End => {
                             injector.release_all();
                             injector.reset_edge();
@@ -338,6 +351,11 @@ impl PlatformInputTarget {
             .recv()
             .map_err(|_| anyhow!("input thread exited"))??;
         Ok(Arc::new(PlatformInputTarget { tx }))
+    }
+
+    /// Change how received input is replayed (e.g. the Ctrl/Command swap).
+    pub fn set_options(&self, opts: InjectorOptions) {
+        let _ = self.tx.send(Cmd::Options(opts));
     }
 }
 
@@ -353,6 +371,7 @@ impl InputTarget for PlatformInputTarget {
                 None
             }
             Frame::Leave { .. } => None, // only travels the other way
+            Frame::Active(_) => None,    // handled by the channel itself
             Frame::Input(e) => {
                 let _ = self.tx.send(Cmd::Event(e));
                 None

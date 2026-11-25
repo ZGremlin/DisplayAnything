@@ -21,6 +21,8 @@ use macos as platform;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+mod windows_focus;
+#[cfg(windows)]
 use windows as platform;
 #[cfg(not(any(windows, target_os = "macos")))]
 mod unsupported;

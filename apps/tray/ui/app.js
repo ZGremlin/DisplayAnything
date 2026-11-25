@@ -91,7 +91,9 @@ async function loadInput() {
   sel.value = current;
   sel.disabled = !st.supported;
   $("receiving").hidden = !st.receiving_from;
-  $("receiving").textContent = st.receiving_from ? `${st.receiving_from} is using this computer's keyboard and mouse.` : "";
+  $("receiving").textContent = st.controlled_by
+    ? `${st.controlled_by} is controlling this computer's keyboard and mouse.`
+    : st.receiving_from ? `${st.receiving_from} is connected and can control this computer.` : "";
   const share = st.share;
   const live = !!(current && share && share.peer);
   $("input-live").hidden = !live;
@@ -101,7 +103,8 @@ async function loadInput() {
     $("input-state").textContent = !share.connected
       ? `Waiting for ${share.peer}…`
       : share.remote_active ? `Keyboard and mouse are controlling ${share.peer}.` : "Keyboard and mouse are on this computer.";
-    $("use-remote").disabled = !share.connected;
+    lastShare = share;
+    applySwitchButtons();
     // The machine that has input gets the filled button.
     $("use-remote").className = share.remote_active ? "" : "secondary";
     $("use-local").className = share.remote_active ? "secondary" : "";
@@ -155,11 +158,36 @@ let recordingAction = null;
 let recordTimeout = null;
 const ACTION_NAMES = { to_remote: "switching to the other computer", to_local: "coming back", panic: "always coming back", edge_lock: "pausing edge crossing" };
 
+let edgeMode = false;
+const SIDE_NAMES = { left: "left", right: "right", top: "top", bottom: "bottom" };
+
 async function loadEdge() {
   const v = await invoke("get_edge");
+  edgeMode = !!v.edge;
   $("edge").value = v.edge || "";
   $("edge-locked").checked = v.locked;
-  $("edge-locked").disabled = !v.edge;
+  $("edge-opts").hidden = !edgeMode;
+  $("mode-note").textContent = edgeMode
+    ? "Push a little past that edge to move over; it won't cross while you're dragging something. The switching shortcuts and buttons are off in this mode; the \"always come back\" shortcut still works. Set the opposite side on the other computer to cross back from there too."
+    : "Use the shortcuts below, or the buttons above, to move your keyboard and mouse between computers.";
+  // Edge crossing is a mode of its own: it replaces the switching shortcuts.
+  for (const row of document.querySelectorAll(".hk-row")) {
+    const a = row.dataset.action;
+    const off = edgeMode ? (a === "to_remote" || a === "to_local") : a === "edge_lock";
+    row.classList.toggle("off", off);
+    row.querySelector(".hk-change").disabled = off || recordingAction !== null;
+  }
+  $("hint-keys").hidden = edgeMode;
+  $("hint-edge").hidden = !edgeMode;
+  $("hint-side").textContent = SIDE_NAMES[v.edge] || "";
+  applySwitchButtons();
+}
+
+let lastShare = null;
+function applySwitchButtons() {
+  const share = lastShare;
+  $("use-remote").disabled = edgeMode || !(share && share.connected);
+  $("use-local").disabled = edgeMode;
 }
 
 async function loadHotkeys() {
@@ -170,6 +198,7 @@ async function loadHotkeys() {
   $("hint-remote").replaceChildren(comboNode(v.hotkeys.to_remote));
   $("hint-local").replaceChildren(comboNode(v.hotkeys.to_local));
   $("hint-panic").replaceChildren(comboNode(v.hotkeys.panic));
+  $("hint-panic2").replaceChildren(comboNode(v.hotkeys.panic));
   $("hk-reset").hidden = v.is_default;
 }
 
@@ -179,6 +208,7 @@ function stopRecordingUi() {
   $("hk-recorder").hidden = true;
   document.querySelectorAll(".hk-row").forEach((r) => r.classList.remove("recording"));
   document.querySelectorAll(".hk-change").forEach((b) => (b.disabled = false));
+  loadEdge();
 }
 
 async function startRecording(action) {
@@ -374,6 +404,7 @@ $("hk-reset").addEventListener("click", async () => { await invoke("reset_hotkey
 $("edge").addEventListener("change", async (e) => { await invoke("set_edge", { edge: e.target.value || null }); loadEdge(); });
 $("edge-locked").addEventListener("change", (e) => invoke("set_edge_locked", { locked: e.target.checked }));
 $("logging").addEventListener("change", (e) => invoke("set_logging", { on: e.target.checked }));
+$("swap").addEventListener("change", (e) => invoke("set_swap", { on: e.target.checked }));
 $("log-btn2").addEventListener("click", () => invoke("show_log").catch((e) => notice(String(e))));
 $("log-btn").addEventListener("click", () => invoke("show_log").catch((e) => notice(String(e))));
 $("rename-btn").addEventListener("click", renameSelf);
@@ -410,5 +441,6 @@ loadPeers().then(loadInput);
 loadHotkeys();
 loadEdge();
 invoke("get_logging").then((on) => ($("logging").checked = on));
+invoke("get_swap").then((on) => ($("swap").checked = on));
 // Accessibility can be granted in System Settings while we are open.
 setInterval(loadInput, 5000);

@@ -379,9 +379,20 @@ impl Switcher {
         }
     }
 
+    /// Whether edge crossing is the way to switch. It is a mode of its own:
+    /// while it is on, the switching shortcuts and buttons do nothing (the
+    /// panic combination still brings input back).
+    pub fn edge_mode(&self) -> bool {
+        self.edge.is_some()
+    }
+
     /// Switch from the UI (tray menu) rather than a hotkey.
     pub fn set_target(&mut self, t: Target) -> Outcome {
         if t == self.target || (t == Target::Remote && !self.remote_available) {
+            return Outcome::default();
+        }
+        if self.edge_mode() {
+            tracing::debug!(target = ?t, "switch button ignored: edge crossing mode is on");
             return Outcome::default();
         }
         self.switch_to(t)
@@ -427,6 +438,10 @@ impl Switcher {
         let hk = &self.hotkeys;
         if held == hk.panic.normalized() {
             return Some((Target::Local, true));
+        }
+        // Edge crossing mode replaces the switching shortcuts.
+        if self.edge_mode() {
+            return None;
         }
         // Checked by current target first, so one combination can toggle.
         if self.target == Target::Remote && held == hk.to_local.normalized() {
@@ -961,10 +976,36 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_switch_still_tells_the_peer_its_edge() {
+    fn edge_mode_turns_off_the_switching_shortcuts_and_buttons() {
         let mut s = ready();
         s.set_edge(Some(Edge::Right));
-        let out = s.set_target(Target::Remote);
-        assert_eq!(out.enter, Some((Edge::Left, 32_768, false)));
+        // The switch-over shortcut and the button do nothing.
+        press(&mut s, LCTRL);
+        press(&mut s, LALT);
+        let out = press(&mut s, keymap::RIGHT);
+        assert_eq!(out.switched, None);
+        assert!(!out.swallow);
+        release(&mut s, keymap::RIGHT);
+        release(&mut s, LALT);
+        release(&mut s, LCTRL);
+        assert_eq!(s.set_target(Target::Remote).switched, None);
+        // Crossing over the edge works; the come-back shortcut doesn't.
+        s.edge_push(Some(9), true);
+        assert_eq!(s.edge_push(Some(9), true).switched, Some(Target::Remote));
+        press(&mut s, LCTRL);
+        press(&mut s, LALT);
+        assert_eq!(press(&mut s, keymap::LEFT).switched, None);
+        release(&mut s, keymap::LEFT);
+        // The panic combination always brings input back.
+        let out = press(&mut s, keymap::ESC);
+        assert_eq!(out.switched, Some(Target::Local));
+        release(&mut s, keymap::ESC);
+        release(&mut s, LALT);
+        release(&mut s, LCTRL);
+        // Back in shortcut mode, the shortcuts work again.
+        s.set_edge(None);
+        press(&mut s, LCTRL);
+        press(&mut s, LALT);
+        assert_eq!(press(&mut s, keymap::RIGHT).switched, Some(Target::Remote));
     }
 }
