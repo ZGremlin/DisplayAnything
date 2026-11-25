@@ -145,6 +145,26 @@ fn read_clipboard() -> Option<Clip> {
     }
 }
 
+/// Fingerprint of the last clipboard we received from, or sent to, the other
+/// computer. Used so the same content is not sent back and forth, and so a
+/// stale copy does not overwrite a newer one.
+static LAST: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+
+/// Whether this clip is the same content we last synced with the other
+/// computer. Such a clip is not new, so it is not sent or set again.
+pub fn is_synced(clip: &Clip) -> bool {
+    LAST.lock()
+        .map(|l| *l == Some(fingerprint(clip)))
+        .unwrap_or(false)
+}
+
+/// Remember that this clip was synced, whichever direction it went.
+pub fn mark_synced(clip: &Clip) {
+    if let Ok(mut l) = LAST.lock() {
+        *l = Some(fingerprint(clip));
+    }
+}
+
 /// Put something received from the other computer on this clipboard.
 pub fn set(clip: &Clip) {
     let fp = fingerprint(clip);
@@ -154,6 +174,7 @@ pub fn set(clip: &Clip) {
         "clipboard change #{n}: from the other computer, {} hash={fp:016x}",
         describe(clip)
     );
+    mark_synced(clip);
     let mut c = match arboard::Clipboard::new() {
         Ok(c) => c,
         Err(e) => {

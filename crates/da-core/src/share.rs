@@ -194,7 +194,13 @@ impl InputShare {
                             da_input::clipboard::describe(&clip),
                             da_input::clipboard::fingerprint(&clip)
                         );
-                        l.send(clip.into_frame());
+                        // Only send what changed since we last synced, so an
+                        // old copy here does not overwrite the other machine's
+                        // newer copy.
+                        if !clip.is_empty() && !da_input::clipboard::is_synced(&clip) {
+                            da_input::clipboard::mark_synced(&clip);
+                            l.send(clip.into_frame());
+                        }
                     }
                     let peer = link.map(|l| l.peer.name.clone());
                     self.node.emit(Event::InputTargetChanged { peer });
@@ -212,7 +218,7 @@ impl InputShare {
                                     da_input::clipboard::describe(&clip),
                                     da_input::clipboard::fingerprint(&clip)
                                 );
-                                if !clip.is_empty() {
+                                if !clip.is_empty() && !da_input::clipboard::is_synced(&clip) {
                                     da_input::clipboard::set(&clip);
                                 }
                             }
