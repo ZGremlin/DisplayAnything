@@ -115,6 +115,16 @@ fn log_change_if_new(source: &str, fp: u64, clip: &Clip) {
 
 fn read_clipboard() -> Option<Clip> {
     if let Some(paths) = file_paths() {
+        if let Some(first) = paths.first() {
+            tracing::info!("pasteboard first file: {}", first.display());
+        }
+        // Files we received from the other computer are already on its
+        // side; sending them back would only echo them.
+        let received = std::env::temp_dir().join("DisplayAnything-received");
+        if !paths.is_empty() && paths.iter().all(|p| p.starts_with(&received)) {
+            tracing::info!("the file on the clipboard is one we received; not sent back");
+            return None;
+        }
         if !paths.is_empty() {
             if let Some(clip) = read_files(&paths) {
                 return Some(clip);
