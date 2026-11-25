@@ -370,6 +370,15 @@ fn set_file_paths(paths: &[PathBuf]) -> Result<()> {
     pb.clearContents();
     let ok = unsafe { pb.setPropertyList_forType(&list, NSFilenamesPboardType) };
     if ok {
+        // Read the pasteboard back with the same reader used for sending, to
+        // confirm the files we just wrote are what a reply would send.
+        let back = file_paths();
+        tracing::info!(
+            written = paths.len(),
+            read_back = ?back.as_ref().map(|v| v.len()),
+            first = ?back.as_ref().and_then(|v| v.first()),
+            "pasteboard read back after set"
+        );
         Ok(())
     } else {
         bail!("the pasteboard refused the files")
