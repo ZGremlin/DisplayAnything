@@ -567,6 +567,27 @@ final class ViewerSession: ObservableObject {
             x: cursor.x + delta.x * gain / shown.width,
             y: cursor.y + delta.y * gain / shown.height))
         pointAt(cursor)
+        followCursor()
+    }
+
+    /// Zoomed in: when the cursor comes near an edge of the phone's screen,
+    /// move the picture so the cursor stays in view.
+    private func followCursor() {
+        guard layout.scale > 1.01 else { return }
+        let p = layout.point(at: cursor)
+        let margin: CGFloat = 60
+        let size = layout.size
+        var pan = CGPoint.zero
+        if p.x < margin { pan.x = margin - p.x }
+        if p.x > size.width - margin { pan.x = (size.width - margin) - p.x }
+        if p.y < margin { pan.y = margin - p.y }
+        if p.y > size.height - margin { pan.y = (size.height - margin) - p.y }
+        guard pan != .zero else { return }
+        onPan?(pan)
+        // The view hands back the new layout asynchronously; keep ours in
+        // step meanwhile so fast moves don't overshoot.
+        layout.offset.width += pan.x
+        layout.offset.height += pan.y
     }
 }
 
