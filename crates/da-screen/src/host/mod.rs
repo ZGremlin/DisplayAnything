@@ -107,6 +107,41 @@ pub fn capture_permission(prompt: bool) -> bool {
     platform::capture_permission(prompt)
 }
 
+/// A display mode the host's monitor offers, for switching its real
+/// resolution to the one the viewer asked for. Sizes are in the units the
+/// person sees (points on macOS).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Mode {
+    pub width: u32,
+    pub height: u32,
+    pub hz: u32,
+    /// macOS: drawn at 2x (sharper).
+    pub hidpi: bool,
+}
+
+/// The mode to switch to for a `want` sized picture: that exact size if
+/// offered, else the biggest that fits in it; same refresh rate and
+/// HiDPI preferred. None when the current mode is already the best one or
+/// nothing fits.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub(crate) fn pick_mode(modes: &[Mode], current: Mode, want: (u32, u32)) -> Option<usize> {
+    let best = modes
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.width <= want.0 && m.height <= want.1)
+        .max_by_key(|(_, m)| {
+            (
+                (m.width, m.height) == want,
+                u64::from(m.width) * u64::from(m.height),
+                m.hz == current.hz,
+                m.hz,
+                m.hidpi,
+            )
+        })?;
+    let m = best.1;
+    ((m.width, m.height) != (current.width, current.height)).then_some(best.0)
+}
+
 /// `(w, h)` scaled down (never up) to fit in `limit`, keeping its shape,
 /// with even sides as NV12 needs.
 pub(crate) fn fit_within((w, h): (u32, u32), (lw, lh): (u32, u32)) -> (u32, u32) {
@@ -124,6 +159,37 @@ pub(crate) fn even(v: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mode(width: u32, height: u32, hz: u32) -> Mode {
+        Mode {
+            width,
+            height,
+            hz,
+            hidpi: false,
+        }
+    }
+
+    #[test]
+    fn picks_the_mode_to_switch_to() {
+        let modes = [
+            mode(5120, 1440, 120),
+            mode(3840, 1080, 120),
+            mode(2560, 1440, 60),
+            mode(2560, 1440, 120),
+            mode(1920, 1080, 120),
+            mode(1920, 1080, 60),
+            mode(1280, 720, 60),
+        ];
+        let cur = mode(5120, 1440, 120);
+        // Exact size, same refresh rate.
+        assert_eq!(pick_mode(&modes, cur, (1920, 1080)), Some(4));
+        assert_eq!(pick_mode(&modes, cur, (2560, 1440)), Some(3));
+        // No exact match: the biggest that fits.
+        assert_eq!(pick_mode(&modes, cur, (3000, 2000)), Some(3));
+        // Already there, or nothing fits.
+        assert_eq!(pick_mode(&modes, cur, (5120, 1440)), None);
+        assert_eq!(pick_mode(&modes, cur, (800, 600)), None);
+    }
 
     #[test]
     fn wide_screens_fit_the_encoder() {

@@ -16,9 +16,12 @@ use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_graphics::{
-    CGDirectDisplayID, CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode,
-    CGGetActiveDisplayList, CGMainDisplayID, CGPreflightScreenCaptureAccess,
-    CGRequestScreenCaptureAccess,
+    kCGDisplayShowDuplicateLowResolutionModes, CGBeginDisplayConfiguration,
+    CGCancelDisplayConfiguration, CGCompleteDisplayConfiguration,
+    CGConfigureDisplayWithDisplayMode, CGConfigureOption, CGDirectDisplayID, CGDisplayBounds,
+    CGDisplayConfigRef, CGDisplayCopyAllDisplayModes, CGDisplayCopyDisplayMode, CGDisplayMode,
+    CGError, CGGetActiveDisplayList, CGMainDisplayID, CGPreflightScreenCaptureAccess,
+    CGRequestScreenCaptureAccess, CGRestorePermanentDisplayConfiguration,
 };
 use objc2_core_media::{
     kCMSampleAttachmentKey_NotSync, kCMTimeInvalid, kCMVideoCodecType_H264, CMSampleBuffer, CMTime,
@@ -81,6 +84,9 @@ pub(super) struct Host {
     _output: SendBox<Retained<StreamOutput>>,
     _queue: DispatchRetained<DispatchQueue>,
     timer: Option<std::thread::JoinHandle<()>>,
+    /// Puts the display's resolution back when the session ends (dropped
+    /// after capture has stopped).
+    _mode: Option<ModeGuard>,
 }
 
 /// Lets Objective-C objects that are safe to message from any thread
@@ -98,12 +104,18 @@ impl Host {
                  (System Settings > Privacy & Security > Screen Recording)"
             );
         }
-        let content = shareable_content()?;
         let ids = display_ids();
         let (display_index, wanted) = match ids.get(opts.display as usize) {
             Some(id) => (opts.display, *id),
             None => (0, CGMainDisplayID()),
         };
+        // Switch the display to the resolution the viewer asked for, then
+        // let it settle before looking at it.
+        let mode = opts.max_size.and_then(|want| switch_mode(wanted, want));
+        if mode.is_some() {
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+        let content = shareable_content()?;
         let displays = unsafe { content.0.displays() };
         let display: Retained<SCDisplay> = displays
             .iter()
@@ -221,6 +233,7 @@ impl Host {
             _output: SendBox(output),
             _queue: queue,
             timer: Some(timer),
+            _mode: mode,
         })
     }
 
@@ -536,6 +549,70 @@ fn display_ids() -> Vec<CGDirectDisplayID> {
     let main = CGMainDisplayID();
     list.sort_by_key(|&id| id != main);
     list
+}
+
+/// A display switched to another resolution for a session. Dropping it
+/// switches back; macOS also reverts it if this app quits (the change is
+/// made "for this app only").
+struct ModeGuard;
+
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        CGRestorePermanentDisplayConfiguration();
+        tracing::info!("restored the screen resolution");
+    }
+}
+
+/// Switch display `id` to the mode that best fits `want` (in points, HiDPI
+/// preferred so it stays sharp); None if it is already there or the switch
+/// failed.
+fn switch_mode(id: CGDirectDisplayID, want: (u32, u32)) -> Option<ModeGuard> {
+    unsafe {
+        let current = CGDisplayCopyDisplayMode(id)?;
+        let key: &CFString = kCGDisplayShowDuplicateLowResolutionModes;
+        let opts =
+            CFDictionary::<CFString, CFType>::from_slices(&[key], &[CFBoolean::new(true).as_ref()]);
+        let list = CGDisplayCopyAllDisplayModes(id, Some(opts.as_opaque()))?;
+        let mut all: Vec<CFRetained<CGDisplayMode>> = Vec::new();
+        for i in 0..list.count() {
+            let p = list.value_at_index(i) as *mut CGDisplayMode;
+            if let Some(p) = NonNull::new(p) {
+                let m = CFRetained::retain(p);
+                if CGDisplayMode::is_usable_for_desktop_gui(Some(&m)) {
+                    all.push(m);
+                }
+            }
+        }
+        let as_mode = |m: &CGDisplayMode| super::Mode {
+            width: CGDisplayMode::width(Some(m)) as u32,
+            height: CGDisplayMode::height(Some(m)) as u32,
+            hz: CGDisplayMode::refresh_rate(Some(m)).round() as u32,
+            hidpi: CGDisplayMode::pixel_width(Some(m)) > CGDisplayMode::width(Some(m)),
+        };
+        let modes: Vec<super::Mode> = all.iter().map(|m| as_mode(m)).collect();
+        let pick = super::pick_mode(&modes, as_mode(&current), want)?;
+        let mode = &all[pick];
+        let mut config: CGDisplayConfigRef = std::ptr::null_mut();
+        if CGBeginDisplayConfiguration(&mut config) != CGError::Success {
+            return None;
+        }
+        if CGConfigureDisplayWithDisplayMode(config, id, Some(mode), None) != CGError::Success
+            || CGCompleteDisplayConfiguration(config, CGConfigureOption::ForAppOnly)
+                != CGError::Success
+        {
+            CGCancelDisplayConfiguration(config);
+            tracing::warn!("could not change the screen resolution");
+            return None;
+        }
+        tracing::info!(
+            width = modes[pick].width,
+            height = modes[pick].height,
+            hz = modes[pick].hz,
+            hidpi = modes[pick].hidpi,
+            "switched the screen resolution for remote control"
+        );
+        Some(ModeGuard)
+    }
 }
 
 fn pixel_size(id: CGDirectDisplayID) -> Option<(u32, u32)> {

@@ -14,18 +14,23 @@ use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use windows::core::PCWSTR;
 use windows::core::{Interface, VARIANT};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    ChangeDisplaySettingsExW, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
+    CDS_FULLSCREEN, CDS_TYPE, DEVMODEW, DISP_CHANGE_SUCCESSFUL, DM_DISPLAYFREQUENCY, DM_PELSHEIGHT,
+    DM_PELSWIDTH, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE, HDC, HMONITOR, MONITORINFO,
+    MONITORINFOEXW,
 };
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -44,11 +49,27 @@ pub(super) struct Host {
     stop: Arc<AtomicBool>,
     keyframe: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    /// Puts the monitor's resolution back when the session ends (dropped
+    /// after the capture thread has stopped).
+    _mode: Option<ModeGuard>,
 }
 
 impl Host {
     pub(super) fn start(opts: HostOptions, mut sink: Sink) -> Result<Self> {
-        let mons = monitors();
+        let mut mons = monitors();
+        // Switch the monitor to the resolution the viewer asked for.
+        let mode = match (
+            opts.max_size,
+            mons.get(opts.display as usize).or_else(|| mons.first()),
+        ) {
+            (Some(want), Some(m)) => switch_mode(m.handle, want),
+            _ => None,
+        };
+        if mode.is_some() {
+            // Let the monitor settle before capturing it.
+            std::thread::sleep(Duration::from_millis(1500));
+            mons = monitors();
+        }
         let bounds = mons
             .get(opts.display as usize)
             .or_else(|| mons.first())
@@ -69,6 +90,7 @@ impl Host {
             stop,
             keyframe,
             thread: Some(thread),
+            _mode: mode,
         })
     }
 
@@ -134,6 +156,97 @@ fn monitors() -> Vec<Monitor> {
     // Main display first, then the rest in Windows' order.
     list.sort_by_key(|m| !m.primary);
     list
+}
+
+/// A monitor switched to another resolution for a session. Dropping it
+/// switches back. The switch is also temporary to Windows (CDS_FULLSCREEN),
+/// so it reverts even if this app quits unexpectedly.
+struct ModeGuard {
+    device: Vec<u16>,
+}
+
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        let r = unsafe {
+            ChangeDisplaySettingsExW(
+                PCWSTR(self.device.as_ptr()),
+                None,
+                HWND::default(),
+                CDS_TYPE(0),
+                None,
+            )
+        };
+        tracing::info!(
+            ok = r == DISP_CHANGE_SUCCESSFUL,
+            "restored the screen resolution"
+        );
+    }
+}
+
+fn devmode() -> DEVMODEW {
+    DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    }
+}
+
+/// Switch `monitor` to the mode that best fits `want`; None if it is
+/// already there or the switch failed.
+fn switch_mode(monitor: HMONITOR, want: (u32, u32)) -> Option<ModeGuard> {
+    unsafe {
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        if !GetMonitorInfoW(monitor, &mut info as *mut _ as *mut MONITORINFO).as_bool() {
+            return None;
+        }
+        let len = info
+            .szDevice
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(info.szDevice.len());
+        let mut device = info.szDevice[..len].to_vec();
+        device.push(0);
+        let name = PCWSTR(device.as_ptr());
+
+        let mut cur = devmode();
+        if !EnumDisplaySettingsW(name, ENUM_CURRENT_SETTINGS, &mut cur).as_bool() {
+            return None;
+        }
+        let as_mode = |d: &DEVMODEW| super::Mode {
+            width: d.dmPelsWidth,
+            height: d.dmPelsHeight,
+            hz: d.dmDisplayFrequency,
+            hidpi: false,
+        };
+        let mut all = Vec::new();
+        let mut i = 0;
+        loop {
+            let mut d = devmode();
+            if !EnumDisplaySettingsW(name, ENUM_DISPLAY_SETTINGS_MODE(i), &mut d).as_bool() {
+                break;
+            }
+            i += 1;
+            if d.dmBitsPerPel == cur.dmBitsPerPel {
+                all.push(d);
+            }
+        }
+        let modes: Vec<super::Mode> = all.iter().map(as_mode).collect();
+        let pick = super::pick_mode(&modes, as_mode(&cur), want)?;
+        let mut d = all[pick];
+        d.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+        let r = ChangeDisplaySettingsExW(name, Some(&d), HWND::default(), CDS_FULLSCREEN, None);
+        if r != DISP_CHANGE_SUCCESSFUL {
+            tracing::warn!(?r, "could not change the screen resolution");
+            return None;
+        }
+        tracing::info!(
+            width = d.dmPelsWidth,
+            height = d.dmPelsHeight,
+            hz = d.dmDisplayFrequency,
+            "switched the screen resolution for remote control"
+        );
+        Some(ModeGuard { device })
+    }
 }
 
 pub(super) fn displays() -> Vec<DisplayInfo> {
