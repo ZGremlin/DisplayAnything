@@ -10,6 +10,7 @@
 //! already converted to the AVCC form `AVSampleBufferDisplayLayer` takes.
 
 use anyhow::anyhow;
+use da_core::da_input::{InputEvent, MouseButton};
 use da_core::da_screen::h264;
 use da_core::da_screen::wire::StreamSettings;
 use da_core::da_screen::ViewMsg;
@@ -24,6 +25,10 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 uniffi::setup_scaffolding!();
+
+fn clamp16(v: i32) -> i16 {
+    v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
 
 /// Everything Swift needs to know when something goes wrong. The message is
 /// for the person, in plain words.
@@ -188,6 +193,15 @@ impl Client {
         }))
     }
 
+    /// Change the name this phone shows to desktops. Swift keeps the name
+    /// and passes it again on launch.
+    pub fn set_device_name(&self, name: String) {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            self.node.set_name(trimmed);
+        }
+    }
+
     /// Short fingerprint of this phone, for showing to the person.
     pub fn fingerprint(&self) -> String {
         self.node.identity().fingerprint().short()
@@ -324,6 +338,24 @@ impl Client {
     }
 }
 
+/// A mouse button the phone can press on the desktop.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum Button {
+    Left,
+    Right,
+    Middle,
+}
+
+impl From<Button> for MouseButton {
+    fn from(b: Button) -> Self {
+        match b {
+            Button::Left => MouseButton::Left,
+            Button::Right => MouseButton::Right,
+            Button::Middle => MouseButton::Middle,
+        }
+    }
+}
+
 /// An open screen. Keep it while the picture is on screen.
 #[derive(uniffi::Object)]
 pub struct Screen {
@@ -350,6 +382,47 @@ impl Screen {
             max_height,
             bitrate_kbps,
         });
+    }
+
+    /// Move the desktop's pointer by a number of pixels on the desktop.
+    pub fn move_pointer(&self, dx: i32, dy: i32) {
+        self.control.send_input(InputEvent::MouseMove {
+            dx: clamp16(dx),
+            dy: clamp16(dy),
+        });
+    }
+
+    /// Put the desktop's pointer at a fraction of its screen (0 to 1 each way).
+    pub fn point_at(&self, fx: f64, fy: f64) {
+        let scale = |f: f64| (f.clamp(0.0, 1.0) * 65535.0).round() as u16;
+        self.control.pointer(scale(fx), scale(fy));
+    }
+
+    /// Press or release a mouse button on the desktop.
+    pub fn click(&self, button: Button, down: bool) {
+        self.control.send_input(InputEvent::Button {
+            button: button.into(),
+            down,
+        });
+    }
+
+    /// Scroll by notches (positive is up and right).
+    pub fn scroll(&self, dx: i32, dy: i32) {
+        self.control.send_input(InputEvent::Wheel {
+            dx: clamp16(dx.saturating_mul(120)),
+            dy: clamp16(dy.saturating_mul(120)),
+        });
+    }
+
+    /// Press or release a key, by USB HID usage code (keyboard page).
+    pub fn key(&self, usage: u16, down: bool) {
+        self.control.send_input(InputEvent::Key { usage, down });
+    }
+
+    /// Let go of every key and button the desktop is holding. Send this
+    /// when the view goes away, or if anything looks stuck.
+    pub fn release_all(&self) {
+        self.control.send_input(InputEvent::ReleaseAll);
     }
 
     /// End the stream. The desktop stops sending and its banner goes away.
