@@ -1,0 +1,3 @@
+// Committed base settings. Personal settings (DEVELOPMENT_TEAM) go in
+// Local.xcconfig next to this file, which is gitignored and optional.
+#include? "Local.xcconfig"
