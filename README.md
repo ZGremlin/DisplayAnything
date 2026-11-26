@@ -21,7 +21,7 @@ Use your own computers together over your own network: see and control one compu
 | macOS | `DisplayAnything-macOS.zip` and `DisplayAnythingInstall.sh` |
 | Command-line agent (optional) | `da-agent.exe` (Windows), `da-agent-macos.tar.gz` (macOS) |
 
-The builds aren't code-signed, which is why there's no cost and no account involved. On **Windows**, SmartScreen may warn the first time: click **More info**, then **Run anyway**. On a **Mac**, download both files, then run `bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip` (see [Install](#install) for what it does). The iPhone and iPad app isn't in a release yet.
+The builds aren't code-signed yet. On **Windows**, SmartScreen may warn the first time: click **More info**, then **Run anyway**. On a **Mac**, download both files, then run `bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip` (see [Install](#install) for what it does). The iPhone and iPad app isn't in a release yet.
 
 ## What it does today
 
