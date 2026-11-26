@@ -364,6 +364,15 @@ fn set_file_paths(paths: &[PathBuf]) -> Result<()> {
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
+    // OLE keeps its own copy of the last clipboard object, such as Explorer's
+    // copy. Paste and OLE readers can keep seeing that old object after a raw
+    // write, so release it first.
+    unsafe {
+        let _ = windows::Win32::System::Ole::OleInitialize(None);
+        let _ = windows::Win32::System::Ole::OleSetClipboard(
+            None::<&windows::Win32::System::Com::IDataObject>,
+        );
+    }
     let result = {
         let _clip = clipboard_win::Clipboard::new_attempts(10).map_err(|e| anyhow!("{e}"))?;
         let written = clipboard_win::formats::FileList
