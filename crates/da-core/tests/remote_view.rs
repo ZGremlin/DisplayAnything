@@ -85,9 +85,10 @@ impl ScreenSource for FakeScreen {
 fn fake_starter(requests: Arc<AtomicU32>, seen: Arc<Mutex<Option<u32>>>) -> da_core::ScreenStarter {
     Arc::new(move |opts, mut sink: Sink| {
         *seen.lock().unwrap() = Some(opts.fps);
+        let (w, h) = opts.target_size((1920, 1080));
         sink(StreamEvent::Info(StreamInfo {
-            width: 1920,
-            height: 1080,
+            width: w,
+            height: h,
             codec: Codec::H264,
             displays: 2,
             display: opts.display,
@@ -301,4 +302,43 @@ async fn viewer_can_switch_monitors() {
     .await
     .unwrap();
     assert_eq!(info.display, 1);
+}
+
+#[tokio::test]
+async fn viewer_can_change_size_and_quality() {
+    let (host, addr, viewer) = paired().await;
+    allow_remote(&host, &viewer);
+    let seen = Arc::new(Mutex::new(None));
+    host.set_screen_starter(Some(fake_starter(Arc::new(AtomicU32::new(0)), seen)));
+    let mut view = viewer
+        .open_remote(
+            addr,
+            StartRequest {
+                max_width: 1280,
+                max_height: 1280,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    match next(&mut view).await {
+        ViewMsg::Info(i) => assert_eq!((i.width, i.height), (1280, 720)),
+        other => panic!("expected info, got {other:?}"),
+    }
+    view.control()
+        .configure(da_core::da_screen::wire::StreamSettings {
+            max_width: 0,
+            max_height: 0,
+            bitrate_kbps: 80_000,
+        });
+    let info = timeout(Duration::from_secs(5), async {
+        loop {
+            if let ViewMsg::Info(i) = next(&mut view).await {
+                return i;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!((info.width, info.height), (1920, 1080));
 }

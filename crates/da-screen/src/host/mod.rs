@@ -23,6 +23,8 @@ pub struct HostOptions {
     pub display: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
+    /// Largest picture to send (scaled to fit); None = full resolution.
+    pub max_size: Option<(u32, u32)>,
 }
 
 impl From<&StartRequest> for HostOptions {
@@ -31,8 +33,29 @@ impl From<&StartRequest> for HostOptions {
             display: r.display,
             fps: r.fps.clamp(1, 240),
             bitrate_kbps: r.bitrate_kbps.clamp(1_000, 400_000),
+            max_size: max_size(r.max_width, r.max_height),
         }
     }
+}
+
+impl HostOptions {
+    /// These options with new size and quality settings.
+    pub fn with_settings(&self, s: &crate::wire::StreamSettings) -> Self {
+        HostOptions {
+            bitrate_kbps: s.bitrate_kbps.clamp(1_000, 400_000),
+            max_size: max_size(s.max_width, s.max_height),
+            ..self.clone()
+        }
+    }
+
+    /// The picture size to try first for a screen of `full` pixels.
+    pub fn target_size(&self, full: (u32, u32)) -> (u32, u32) {
+        fit_within(full, self.max_size.unwrap_or((u32::MAX, u32::MAX)))
+    }
+}
+
+fn max_size(w: u32, h: u32) -> Option<(u32, u32)> {
+    (w > 0 && h > 0).then_some((w.max(320), h.max(200)))
 }
 
 /// What the capture thread reports.
@@ -86,7 +109,6 @@ pub fn capture_permission(prompt: bool) -> bool {
 
 /// `(w, h)` scaled down (never up) to fit in `limit`, keeping its shape,
 /// with even sides as NV12 needs.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn fit_within((w, h): (u32, u32), (lw, lh): (u32, u32)) -> (u32, u32) {
     let k = (lw as f64 / w as f64).min(lh as f64 / h as f64).min(1.0);
     let scale = |v: u32| even(((v as f64 * k).round() as u32).max(2));

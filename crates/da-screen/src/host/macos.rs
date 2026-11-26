@@ -4,7 +4,7 @@
 //!
 //! Needs the Screen Recording permission.
 
-use super::{even, HostOptions, Sink, StreamEvent};
+use super::{HostOptions, Sink, StreamEvent};
 use crate::h264;
 use crate::wire::{Codec, EncodedFrame, StreamInfo};
 use crate::DisplayInfo;
@@ -116,7 +116,8 @@ impl Host {
         let id = unsafe { display.displayID() };
         let (pw, ph) = pixel_size(id)
             .unwrap_or_else(|| unsafe { (display.width() as u32, display.height() as u32) });
-        let (width, height) = (even(pw), even(ph));
+        // VideoToolbox's H.264 encoder also tops out at 4096 wide.
+        let (width, height) = super::fit_within(opts.target_size((pw, ph)), (4096, 4096));
         let b = CGDisplayBounds(id);
         let bounds = Some(crate::DisplayBounds {
             x: b.origin.x,

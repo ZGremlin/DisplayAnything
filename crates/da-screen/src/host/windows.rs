@@ -306,10 +306,11 @@ impl Encoder {
         opts: &HostOptions,
     ) -> Result<Self> {
         let full = (size.Width.max(2) as u32, size.Height.max(2) as u32);
+        let wanted = opts.target_size(full);
         let mut last_err = None;
         let mut tried = Vec::new();
         for limit in SIZE_LIMITS {
-            let out = super::fit_within(full, limit);
+            let out = super::fit_within(wanted, limit);
             if tried.contains(&out) {
                 continue;
             }
