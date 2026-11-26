@@ -57,8 +57,8 @@ final class ControlSurfaceView: UIView, UIGestureRecognizerDelegate {
         twoTap.numberOfTouchesRequired = 2
 
         let long = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
-        long.minimumPressDuration = 0.4
-        long.allowableMovement = 12
+        long.minimumPressDuration = 0.25
+        long.allowableMovement = 10
 
         let drag = UIPanGestureRecognizer(target: self, action: #selector(drag(_:)))
         drag.minimumNumberOfTouches = 1

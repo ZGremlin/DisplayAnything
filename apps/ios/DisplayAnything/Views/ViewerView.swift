@@ -1,16 +1,21 @@
 import SwiftUI
 
-/// One computer's screen. In "View only" pinch zooms and drag pans the
-/// picture on the phone. "Touch" and "Trackpad" send the pointer, clicks and
-/// scrolling to the computer, and the keyboard button types on it.
+
+/// One computer's screen, edge to edge. The controls stay hidden: swipe in
+/// from the left edge for the control panel (Touch, Trackpad or View only,
+/// keyboard, key bar, disconnect) and from the right edge for the key bar
+/// (Esc, Tab, Ctrl, Alt, Win, arrows and so on).
 struct ViewerView: View {
     let desktop: Desktop
     @EnvironmentObject private var store: DesktopStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = ViewerSession()
 
     @AppStorage("controlMode") private var mode: ControlMode = .touch
     @State private var keyboard = false
+    @State private var panel = false
+    @State private var keyBar = false
     @State private var scale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var controlPinch: CGFloat = 1
@@ -56,8 +61,8 @@ struct ViewerView: View {
 
                 KeyboardInput(
                     isActive: $keyboard,
-                    onText: { text, mods in session.type(text, modifiers: mods) },
-                    onKey: { usage, mods in session.press(usage, modifiers: mods) }
+                    onText: { text in session.type(text) },
+                    onKey: { usage in session.press(usage) }
                 )
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
@@ -67,11 +72,12 @@ struct ViewerView: View {
             .onChange(of: layout(size: geo.size), initial: true) { _, l in session.layout = l }
         }
         .ignoresSafeArea()
-        // Our own buttons instead of the navigation bar: they must sit above
-        // the control surface, or a tap meant for them would click the computer.
-        .overlay(alignment: .top) { controls }
+        // Everything below sits above the control surface, so touches on it
+        // never reach the computer.
+        .overlay { edges }
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(true)
+        .persistentSystemOverlays(.hidden)
         .task {
             session.onPinch = { state, value in
                 switch state {
@@ -83,10 +89,156 @@ struct ViewerView: View {
             }
             session.start(desktop: desktop, client: store.client)
         }
+        .onChange(of: mode) { _, _ in session.releaseAll() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { session.releaseAll() }
+        }
         .onDisappear {
             keyboard = false
             session.stop()
         }
+    }
+
+    // MARK: Edge panels
+
+    private var edges: some View {
+        ZStack {
+            // Tapping the picture while a panel is open closes it.
+            if panel || keyBar {
+                Color.black.opacity(0.001)
+                    .contentShape(Rectangle())
+                    .onTapGesture { closePanels() }
+            }
+            HStack(spacing: 0) {
+                if panel {
+                    controlPanel
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                } else {
+                    edgeStrip(opensFrom: .leading)
+                }
+                Spacer(minLength: 0)
+                if keyBar {
+                    KeyBar(session: session)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                } else {
+                    edgeStrip(opensFrom: .trailing)
+                }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if !panel {
+                Button {
+                    session.releaseAll()
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(.black.opacity(0.4), in: Circle())
+                }
+                .accessibilityLabel("Computers")
+                .padding(.leading, 14)
+                .padding(.top, 6)
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: panel)
+        .animation(.snappy(duration: 0.25), value: keyBar)
+    }
+
+    /// A thin strip along a screen edge: swipe in from it to open that
+    /// edge's panel. A faint handle shows where it is.
+    private func edgeStrip(opensFrom edge: HorizontalEdge) -> some View {
+        Color.clear
+            .frame(width: 22)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .overlay {
+                Capsule()
+                    .fill(.white.opacity(0.28))
+                    .frame(width: 4, height: 44)
+                    .padding(edge == .leading ? .leading : .trailing, 3)
+                    .frame(maxWidth: .infinity, alignment: edge == .leading ? .leading : .trailing)
+            }
+            .gesture(
+                DragGesture(minimumDistance: 8)
+                    .onEnded { value in
+                        let inward = edge == .leading ? value.translation.width : -value.translation.width
+                        guard inward > 30 else { return }
+                        if edge == .leading { panel = true } else { keyBar = true }
+                    }
+            )
+            .onTapGesture {
+                if edge == .leading { panel = true } else { keyBar = true }
+            }
+            .accessibilityLabel(edge == .leading ? "Show controls" : "Show keys")
+            .accessibilityAddTraits(.isButton)
+    }
+
+    private var controlPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(desktop.name)
+                .font(.headline)
+                .lineLimit(1)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Control").font(.caption).foregroundStyle(.secondary)
+                Picker("Control", selection: $mode) {
+                    ForEach([ControlMode.touch, .cursor, .view]) { m in
+                        Label(m.title, systemImage: m.symbol).tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(modeHelp)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Toggle(isOn: $keyboard) {
+                Label("Keyboard", systemImage: "keyboard")
+            }
+            .disabled(!session.isLive)
+
+            Toggle(isOn: $keyBar) {
+                Label("Key bar", systemImage: "command")
+            }
+
+            Spacer(minLength: 0)
+
+            Button(role: .destructive) {
+                session.releaseAll()
+                dismiss()
+            } label: {
+                Label("Disconnect", systemImage: "xmark.circle")
+            }
+        }
+        .padding(16)
+        .frame(width: 280)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(.regularMaterial)
+        .environment(\.colorScheme, .dark)
+        .gesture(
+            DragGesture(minimumDistance: 20).onEnded { value in
+                if value.translation.width < -40 { panel = false }
+            }
+        )
+    }
+
+    private var modeHelp: String {
+        switch mode {
+        case .touch:
+            return "Tap to click. Drag to drag. Press and hold for a right click, or hold then move to drag. Two fingers scroll."
+        case .cursor:
+            return "Drag to move the pointer, tap to click, two-finger tap to right click. Press and hold, then move, to drag. Two fingers scroll."
+        case .view:
+            return "Pinch and drag move the picture on this phone. Nothing is sent to the computer."
+        }
+    }
+
+    private func closePanels() {
+        panel = false
+        keyBar = false
     }
 
     private var liveScale: CGFloat { clamped(scale * pinch * controlPinch) }
@@ -98,45 +250,6 @@ struct ViewerView: View {
             video: session.videoSize)
     }
 
-    private var controls: some View {
-        HStack(spacing: 10) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.left").frame(width: 40, height: 40)
-            }
-            .accessibilityLabel("Computers")
-            Text(desktop.name)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-            Spacer()
-            Menu {
-                Picker("Control", selection: $mode) {
-                    ForEach(ControlMode.allCases) { m in
-                        Label(m.title, systemImage: m.symbol).tag(m)
-                    }
-                }
-            } label: {
-                Image(systemName: mode.symbol).frame(width: 40, height: 40)
-            }
-            .accessibilityLabel("Control: \(mode.title)")
-            Button {
-                keyboard.toggle()
-            } label: {
-                Image(systemName: keyboard ? "keyboard.chevron.compact.down" : "keyboard")
-                    .frame(width: 40, height: 40)
-            }
-            .accessibilityLabel(keyboard ? "Hide keyboard" : "Keyboard")
-            .disabled(!session.isLive)
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 2)
-        .background(.black.opacity(0.45), in: Capsule())
-        .padding(.horizontal, 8)
-        .padding(.top, 4)
-    }
-
     @ViewBuilder
     private var overlay: some View {
         switch session.state {
@@ -145,19 +258,93 @@ struct ViewerView: View {
         case .failed(let message):
             VStack(spacing: 12) {
                 Text(message).multilineTextAlignment(.center)
-                Button("Try again") { session.start(desktop: desktop, client: store.client) }
+                HStack {
+                    Button("Back") { dismiss() }
+                    Button("Try again") { session.start(desktop: desktop, client: store.client) }
+                }
             }
             .padding()
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
             .foregroundStyle(.white)
         case .closed:
-            Text("Stopped").foregroundStyle(.white)
+            VStack(spacing: 12) {
+                Text("Stopped")
+                Button("Back") { dismiss() }
+            }
+            .foregroundStyle(.white)
         case .live:
             EmptyView()
         }
     }
 
     private func clamped(_ value: CGFloat) -> CGFloat { min(max(value, 1), 4) }
+}
+
+/// The keys a phone keyboard lacks, down the right edge. Modifiers latch
+/// for the next key, click or typed character, then let go.
+struct KeyBar: View {
+    @ObservedObject var session: ViewerSession
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 6) {
+                key("esc", HIDKey.escape)
+                key("tab", HIDKey.tab)
+                modifier("ctrl", HIDKey.control)
+                modifier("alt", HIDKey.alt)
+                modifier("win", HIDKey.meta)
+                modifier("shift", HIDKey.shift)
+                key("arrow.up", HIDKey.up, symbol: true)
+                HStack(spacing: 6) {
+                    key("arrow.left", HIDKey.left, symbol: true)
+                    key("arrow.right", HIDKey.right, symbol: true)
+                }
+                key("arrow.down", HIDKey.down, symbol: true)
+                key("del", HIDKey.deleteForward)
+                key("delete.left", HIDKey.backspace, symbol: true)
+                key("return", HIDKey.enter, symbol: true)
+                key("home", HIDKey.home)
+                key("end", HIDKey.end)
+                key("pg up", HIDKey.pageUp)
+                key("pg dn", HIDKey.pageDown)
+            }
+            .padding(8)
+        }
+        .frame(width: 108)
+        .frame(maxHeight: .infinity)
+        .background(.regularMaterial)
+        .environment(\.colorScheme, .dark)
+    }
+
+    private func key(_ label: String, _ usage: UInt16, symbol: Bool = false) -> some View {
+        Button {
+            session.press(usage)
+        } label: {
+            Group {
+                if symbol { Image(systemName: label) } else { Text(label) }
+            }
+            .font(.system(.callout, design: .rounded).weight(.medium))
+            .frame(maxWidth: .infinity, minHeight: 34)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel(label)
+    }
+
+    private func modifier(_ label: String, _ usage: UInt16) -> some View {
+        let on = session.latched.contains(usage)
+        return Button {
+            session.toggleLatch(usage)
+        } label: {
+            Text(label)
+                .font(.system(.callout, design: .rounded).weight(.medium))
+                .frame(maxWidth: .infinity, minHeight: 34)
+        }
+        .buttonStyle(.bordered)
+        .tint(on ? .accentColor : nil)
+        .background(on ? Color.accentColor.opacity(0.5) : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
 }
 
 /// Where the picture sits on the phone: the view's size, the local zoom and
@@ -216,6 +403,9 @@ final class ViewerSession: ObservableObject {
     private var scrollRemainder = CGPoint.zero
     private var dragging = false
     private var lastHold = CGPoint.zero
+    private var holdStart = CGPoint.zero
+    private var holdMoved = false
+    private var holding = false
 
     var isLive: Bool {
         if case .live = state { return true }
@@ -266,16 +456,46 @@ final class ViewerSession: ObservableObject {
 
     // MARK: Keyboard
 
-    func type(_ text: String, modifiers: [UInt16]) {
-        _ = screen?.typeText(text: text, modifiers: modifiers)
+    /// Modifiers latched on the key bar: held for the next key, click or
+    /// typed character, then let go.
+    @Published private(set) var latched: [UInt16] = []
+
+    func toggleLatch(_ usage: UInt16) {
+        if let i = latched.firstIndex(of: usage) {
+            latched.remove(at: i)
+        } else {
+            latched.append(usage)
+        }
     }
 
-    func press(_ usage: UInt16, modifiers: [UInt16]) {
+    private func takeLatched() -> [UInt16] {
+        let mods = latched
+        if !mods.isEmpty { latched.removeAll() }
+        return mods
+    }
+
+    func type(_ text: String) {
+        _ = screen?.typeText(text: text, modifiers: takeLatched())
+    }
+
+    func press(_ usage: UInt16) {
         guard let screen else { return }
+        let modifiers = takeLatched()
         for m in modifiers { screen.key(usage: m, down: true) }
         screen.key(usage: usage, down: true)
         screen.key(usage: usage, down: false)
         for m in modifiers.reversed() { screen.key(usage: m, down: false) }
+    }
+
+    /// Let go of everything held on the computer: after a drag that was cut
+    /// short, on a mode change, or when the app leaves the screen.
+    func releaseAll() {
+        if dragging || holding {
+            dragging = false
+            holding = false
+        }
+        latched.removeAll()
+        screen?.releaseAll()
     }
 
     // MARK: Pointer helpers
@@ -292,9 +512,23 @@ final class ViewerSession: ObservableObject {
         screen?.pointAt(fx: Double(f.x), fy: Double(f.y))
     }
 
+    /// Click, holding any latched modifiers (Ctrl-click, Shift-click).
     private func click(_ button: PointerButton) {
-        screen?.click(button: button, down: true)
-        screen?.click(button: button, down: false)
+        guard let screen else { return }
+        let modifiers = takeLatched()
+        for m in modifiers { screen.key(usage: m, down: true) }
+        screen.click(button: button, down: true)
+        screen.click(button: button, down: false)
+        for m in modifiers.reversed() { screen.key(usage: m, down: false) }
+    }
+
+    /// Press the left button and keep it held (start of a drag).
+    private func pressLeft() {
+        screen?.click(button: .left, down: true)
+    }
+
+    private func releaseLeft() {
+        screen?.click(button: .left, down: false)
     }
 
     /// Trackpad: move the cursor by a finger movement on screen, a little
@@ -324,30 +558,40 @@ extension ViewerSession: ControlSurfaceDelegate {
     }
 
     func surfaceLongPress(_ state: UIGestureRecognizer.State, at point: CGPoint) {
-        switch mode {
-        case .touch:
-            // Press and hold: right click where the finger is.
-            if state == .began {
+        guard mode != .view else { return }
+        // Press and hold presses the left button and keeps it down, so moving
+        // afterwards drags (a window by its title bar, a selection...). In
+        // Touch mode, letting go without moving is a right click instead.
+        switch state {
+        case .began:
+            holdStart = point
+            lastHold = point
+            holdMoved = false
+            if mode == .touch {
+                cursor = clamp(layout.fraction(at: point))
+            }
+            pointAt(cursor)
+            pressLeft()
+            holding = true
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case .changed:
+            guard holding else { return }
+            if hypot(point.x - holdStart.x, point.y - holdStart.y) > 8 { holdMoved = true }
+            if mode == .touch {
                 cursor = clamp(layout.fraction(at: point))
                 pointAt(cursor)
+            } else {
+                moveCursor(by: CGPoint(x: point.x - lastHold.x, y: point.y - lastHold.y))
+            }
+            lastHold = point
+        default:
+            // Ended, cancelled or failed: the button always comes back up.
+            guard holding else { return }
+            holding = false
+            releaseLeft()
+            if mode == .touch, !holdMoved {
                 click(.right)
             }
-        case .cursor:
-            // Press and hold, then move: drag with the left button held.
-            switch state {
-            case .began:
-                lastHold = point
-                pointAt(cursor)
-                screen?.click(button: .left, down: true)
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            case .changed:
-                moveCursor(by: CGPoint(x: point.x - lastHold.x, y: point.y - lastHold.y))
-                lastHold = point
-            default:
-                screen?.click(button: .left, down: false)
-            }
-        case .view:
-            break
         }
     }
 
@@ -359,7 +603,7 @@ extension ViewerSession: ControlSurfaceDelegate {
             case .began:
                 cursor = clamp(layout.fraction(at: point))
                 pointAt(cursor)
-                screen?.click(button: .left, down: true)
+                pressLeft()
                 dragging = true
                 cursor = clamp(layout.fraction(at: CGPoint(x: point.x + delta.x, y: point.y + delta.y)))
                 pointAt(cursor)
@@ -367,7 +611,7 @@ extension ViewerSession: ControlSurfaceDelegate {
                 cursor = clamp(layout.fraction(at: point))
                 pointAt(cursor)
             default:
-                if dragging { screen?.click(button: .left, down: false) }
+                if dragging { releaseLeft() }
                 dragging = false
             }
         case .cursor:
