@@ -45,16 +45,27 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.JC.DisplayAnything
         PRODUCT_NAME: DisplayAnything
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "3"
         DEVELOPMENT_TEAM: "$(DEVELOPMENT_TEAM)"
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
     info:
       path: DisplayAnything/Info.plist
       properties:
         CFBundleDisplayName: DisplayAnything
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         UIRequiresFullScreen: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: "DisplayAnything connects to your computers on this network."
         NSBonjourServices:
           - _displayanything._tcp
