@@ -11,6 +11,7 @@ use crate::switcher::Target;
 use crate::wire::{split_move, InputEvent, MouseButton};
 use crate::INJECTED_MARKER;
 use anyhow::{anyhow, Result};
+use core_foundation::base::TCFType;
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{
@@ -25,6 +26,13 @@ use std::sync::{Arc, Mutex};
 extern "C" {
     fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
     fn CGWarpMouseCursorPosition(p: CGPoint) -> i32;
+    fn CGEventTapEnable(tap: core_foundation::mach_port::CFMachPortRef, enable: bool);
+}
+
+thread_local! {
+    /// The tap of the thread that runs its callback, so it can be re-enabled.
+    static TAP: std::cell::RefCell<Option<core_foundation::mach_port::CFMachPort>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// While remote: (where the pointer was before, where it is held).
@@ -100,6 +108,7 @@ pub(super) fn start(shared: Arc<Shared>) -> Result<()> {
                     return;
                 }
             };
+            TAP.with(|t| *t.borrow_mut() = Some(tap.mach_port.clone()));
             unsafe {
                 let Ok(source) = tap.mach_port.create_runloop_source(0) else {
                     let _ = ready_tx.send(Err(anyhow!("could not attach the event tap")));
@@ -183,6 +192,21 @@ fn modifier_mask(keycode: u16) -> Option<u64> {
 
 /// Returns true if the event must be swallowed.
 fn handle(shared: &Shared, ty: CGEventType, e: &CGEvent) -> bool {
+    // macOS turns a tap off if its callback is slow, or when the user input
+    // is locked down (e.g. a password prompt). Turn it back on at once,
+    // otherwise all input capture stays dead until the app restarts.
+    if matches!(
+        ty,
+        CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
+    ) {
+        tracing::warn!(?ty, "macOS turned the input tap off; switching it back on");
+        TAP.with(|t| {
+            if let Some(port) = t.borrow().as_ref() {
+                unsafe { CGEventTapEnable(port.as_concrete_TypeRef(), true) };
+            }
+        });
+        return false;
+    }
     if e.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == INJECTED_MARKER as i64 {
         return false;
     }
