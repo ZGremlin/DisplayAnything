@@ -21,7 +21,7 @@ Use your own computers together over your own network: see and control one compu
 | macOS | `DisplayAnything-macOS.zip` and `DisplayAnythingInstall.sh` |
 | Command-line agent (optional) | `da-agent.exe` (Windows), `da-agent-macos.tar.gz` (macOS) |
 
-The builds aren't code-signed yet. On **Windows**, SmartScreen may warn the first time: click **More info**, then **Run anyway**. On a **Mac**, download both files, then run `bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip` (see [Install](#install) for what it does). The iPhone and iPad app isn't in a release yet.
+The builds aren't code-signed yet. On **Windows**, SmartScreen may warn the first time: click **More info**, then **Run anyway**. On a **Mac**, download both files, then run `bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip` (see [Install](#install) for the full steps and the three [Mac permissions](#mac-permissions)). The iPhone and iPad app isn't in a release yet.
 
 ## What it does today
 
@@ -74,6 +74,42 @@ When your keyboard and mouse move to the other computer, the clipboard goes with
 - **Tray menu:** open the window, switch the keyboard and mouse over or back, or quit.
 - **Command-line agent** (`da-agent`) for headless machines, scripting and testing.
 
+## How each mode works
+
+DisplayAnything does one of two things between a pair of computers at any moment: share the keyboard and mouse, or control a screen. Starting remote screen control pauses keyboard and mouse sharing on both computers, and sharing picks up again when the screen window closes. **Ctrl+Alt+Esc** (Ctrl+Option+Esc on a Mac) always brings control back to the computer you're sitting at.
+
+Every mode runs over a direct, encrypted connection between the two computers on TCP port 47800, and every mode needs the other computer's permission, set per device under **Saved devices** on the computer being controlled.
+
+### Remote screen control
+
+You see the other computer's screen in a window and work in it as if you were sitting there. Use it when the other computer has no monitor near you, or isn't in the room.
+
+1. On the computer you'll control, under **Saved devices**, tick **May control this desktop** for the computer you'll sit at. It's off by default.
+2. On the computer you're sitting at, click **Control screen** next to it. A window opens with its screen. If it has more than one monitor, the numbered buttons pick one.
+3. While the window is in front, your keyboard and mouse work on the other computer. Click another window, or press Ctrl+Alt+Esc, to have them back. Close the window to end the session.
+
+How it works: the controlled computer captures its screen (Windows Graphics Capture on Windows, ScreenCaptureKit on a Mac) and compresses it with the graphics card's hardware H.264 encoder. Your computer decodes it in hardware and draws it in a native window (Media Foundation and Direct3D 11 on Windows, AVFoundation on a Mac). Mouse positions are sent as points on the remote screen, so the pointer lands exactly where you click; keys are sent as they are. Picture size and quality are chosen under **Control screen picture** or from the window's menu. The controlled computer's tray icon turns green while it's being controlled.
+
+### Shared keyboard and mouse
+
+Both computers have their own monitors on your desk, and one keyboard and mouse drives whichever you choose. Nothing is streamed: you look at the other computer's own monitor.
+
+1. On the computer that will receive input, under **Saved devices**, leave **May control this computer with its keyboard and mouse** ticked (on by default).
+2. On the computer whose keyboard and mouse you're using, pick the other computer under **Keyboard and mouse**.
+3. Switch over and back in one of two ways, chosen under **Settings › How to switch**:
+   - **Shortcuts and buttons** (the default): Ctrl+Alt+→ sends the keyboard and mouse over, Ctrl+Alt+← brings them back. The buttons in the window and the tray menu do the same.
+   - **Edge crossing:** say which side the other computer is on. Push the pointer past that edge of your screen and it carries on onto the other computer at the same height; push it back out the opposite edge to return. The switching shortcuts and buttons are off in this mode.
+
+How it works: while the keyboard and mouse are over on the other computer, this computer stops acting on them and sends each key press, mouse move, click and scroll straight to the other computer, which plays them as if they came from its own keyboard and mouse. Key presses are sent as standard keyboard codes, so a PC keyboard works on a Mac and the other way round. Mouse movement is adjusted for each computer's display scaling. Both tray icons turn green with a check mark while one computer is controlling the other.
+
+### Shared clipboard
+
+Part of keyboard and mouse sharing; there's nothing to turn on. Each time the keyboard and mouse move between computers, whatever is on the clipboard goes with them: text, an image, or copied files (up to 100 MB). Copy on one computer, switch, and paste on the other. Copied files land in a temporary folder on the receiving computer and paste like normal files.
+
+### iPhone and iPad
+
+The phone or tablet is a remote screen window in your pocket: it pairs with a computer by IP address and code, and opens that computer's screen. The computer must tick **May control this desktop** for it. Milestone 1 is view-only; touch, pointer and keyboard control are being built. See [iPhone and iPad](#iphone-and-ipad-in-progress) below.
+
 ## iPhone and iPad (in progress)
 
 A free iPhone and iPad app that shows and controls a computer's screen. It is a viewer only: it doesn't share keyboard and mouse or edge crossing.
@@ -95,20 +131,56 @@ The app needs iOS 17 or later. Until it's on the App Store, you build it yoursel
 
 ## Install
 
-Get the installers from the [latest release](https://github.com/ZGremlin/DisplayAnything/releases/latest). Newer test builds are produced for every change by GitHub Actions (the **CI** workflow): download `DisplayAnything-Windows` (an `.exe` installer plus `da-agent.exe`) or `DisplayAnything-macOS` (`DisplayAnything-macOS.zip` plus the agent) from a run's artifacts. Downloading needs the internet once; running it doesn't.
+Downloading needs the internet once; running DisplayAnything doesn't. Install it on every computer you want to use together.
 
-**Windows:** run the installer (SmartScreen may warn about an unsigned app: **More info**, then **Run anyway**). Windows asks once whether to allow it through the firewall; allow it on private networks.
+### Windows
 
-**macOS:** no driver or paid Apple account is needed. Download `DisplayAnything-macOS.zip` and `DisplayAnythingInstall.sh` (also in `scripts/`), then run:
+1. From the [latest release](https://github.com/ZGremlin/DisplayAnything/releases/latest), download `DisplayAnything_0.1.0_x64-setup.exe`.
+2. Run it. The build isn't code-signed yet, so SmartScreen may say "Windows protected your PC": click **More info**, then **Run anyway**.
+3. Open DisplayAnything from the Start menu. It sits in the system tray (bottom right; it may be under the **^** arrow). Click the icon to open its window.
+4. The first time it runs, Windows asks whether to let it through the firewall. Allow it on **private networks**, so your other computers can reach it on TCP port 47800.
+5. Optional: tick **Start at login** at the top of the window.
 
-```sh
-bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip
-```
+No extra permissions are needed on Windows. To control admin windows and UAC prompts on this PC from another computer, run DisplayAnything as administrator.
 
-With no argument it uses the newest DisplayAnything download in `~/Downloads`. It quits the running copy, installs the app into Applications, clears the quarantine flag, re-signs it locally, and resets the Accessibility, Input Monitoring and Screen Recording grants (every new build counts as a new app, so old grants silently stop working). Then it opens the app and the Settings pages where you switch them back on:
+### macOS
 
-- **Accessibility** (and Input Monitoring) for keyboard and mouse sharing. If the mouse works but the keyboard doesn't, one of these is missing.
-- **Screen Recording** on a Mac whose screen you want to view from another computer.
+No driver or paid Apple account is needed.
+
+1. From the [latest release](https://github.com/ZGremlin/DisplayAnything/releases/latest), download `DisplayAnything-macOS.zip` and `DisplayAnythingInstall.sh` into your Downloads folder.
+2. Open **Terminal** and run:
+
+   ```sh
+   bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip
+   ```
+
+   The script quits any running copy, installs the app into Applications, removes the "downloaded from the internet" flag so macOS will open it, re-signs it locally, and clears any old permission grants. Then it opens DisplayAnything and the three System Settings pages below. (With no argument, it uses the newest `DisplayAnything-macOS` download in `~/Downloads`. The script is also in this repo at `scripts/DisplayAnythingInstall.sh`.)
+3. Switch DisplayAnything **on** in each of the three permission pages (see the next section).
+4. **Quit DisplayAnything from its menu-bar icon and open it again**, so macOS applies the new permissions.
+5. Optional: tick **Start at login** at the top of the window.
+
+Run the script again after installing each new build. macOS treats every new build as a new app, so the old permission grants silently stop working until you switch them on again.
+
+### Mac permissions
+
+DisplayAnything needs three permissions on a Mac. All three are in **System Settings › Privacy & Security**. Click the **+** if DisplayAnything isn't listed, and switch it on. If you can't find a page (on newer macOS versions, Accessibility isn't always where you'd expect), type its name into the System Settings search box.
+
+| Permission | Where | What it's for | Without it |
+| --- | --- | --- | --- |
+| **Accessibility** | Privacy & Security › Accessibility | Watching this Mac's keyboard and mouse so they can go to another computer, and typing and clicking on this Mac when another computer controls it | Keyboard and mouse sharing doesn't start; the window shows a button that opens the prompt |
+| **Input Monitoring** | Privacy & Security › Input Monitoring | Seeing key presses, so the keyboard (not just the mouse) can go to another computer | The mouse moves over but the keyboard doesn't: the usual "mouse works, keyboard doesn't" sign |
+| **Screen Recording** | Privacy & Security › Screen Recording (called Screen & System Audio Recording on newer macOS) | Letting another computer see this Mac's screen in remote screen control | The other computer can't open this Mac's screen and gets an error naming this permission |
+
+Which Mac needs which:
+
+- **A Mac that controls another computer** (sharing its keyboard and mouse, or using a remote screen window): Accessibility and Input Monitoring. Without them, a remote screen window still opens but is view-only.
+- **A Mac being controlled** (receiving shared keyboard and mouse, or being viewed): Accessibility, plus Screen Recording to be viewed.
+
+The simplest thing is to switch on all three on every Mac.
+
+### Test builds
+
+Newer builds than the release are produced for every change by GitHub Actions (the **CI** workflow). Download `DisplayAnything-Windows` (an `.exe` installer plus `da-agent.exe`) or `DisplayAnything-macOS` (`DisplayAnything-macOS.zip` plus the agent) from a run's artifacts. The macOS artifact is a zip containing the zip; the install script handles that.
 
 ### Build it yourself
 
