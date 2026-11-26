@@ -255,6 +255,7 @@ async function loadRemoteSettings() {
   };
   fill($("remote-res"), r.resolutions, r.resolution);
   fill($("remote-quality"), r.qualities.map(q => ({ id: q.id, label: `Quality: ${q.label}` })), r.quality);
+  if (document.activeElement !== $("remote-audio")) $("remote-audio").checked = r.audio;
 }
 $("remote-res").addEventListener("change", async (e) => {
   try { await invoke("set_remote_settings", { resolution: e.target.value, quality: null }); }
@@ -262,6 +263,10 @@ $("remote-res").addEventListener("change", async (e) => {
 });
 $("remote-quality").addEventListener("change", async (e) => {
   try { await invoke("set_remote_settings", { resolution: null, quality: e.target.value }); }
+  catch (err) { notice(String(err)); }
+});
+$("remote-audio").addEventListener("change", async (e) => {
+  try { await invoke("set_remote_settings", { resolution: null, quality: null, audio: e.target.checked }); }
   catch (err) { notice(String(err)); }
 });
 

@@ -5,7 +5,7 @@ use crate::DisplayInfo;
 use anyhow::Result;
 
 #[cfg(target_os = "macos")]
-mod macos;
+pub(crate) mod macos;
 #[cfg(target_os = "macos")]
 use macos as platform;
 #[cfg(not(any(windows, target_os = "macos")))]

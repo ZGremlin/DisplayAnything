@@ -53,6 +53,7 @@ async fn desktop() -> (Arc<Node>, std::net::SocketAddr) {
             codec: Codec::H264,
             displays: 1,
             display: 0,
+            audio: false,
         }));
         sink(StreamEvent::Frame(EncodedFrame {
             keyframe: true,
@@ -176,6 +177,7 @@ async fn pairs_views_asks_for_a_keyframe_and_stops() {
         bitrate_kbps: 15_000,
         max_width: 1024,
         max_height: 768,
+        audio: false,
     };
     let refused = phone
         .open_screen(
@@ -252,6 +254,7 @@ async fn unknown_desktop_is_not_paired() {
                 bitrate_kbps: 15_000,
                 max_width: 0,
                 max_height: 0,
+                audio: false,
             },
             Arc::new(Sinks(tx)),
         )

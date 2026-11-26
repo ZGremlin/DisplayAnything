@@ -14,6 +14,7 @@ use crate::trust::TrustedPeer;
 use crate::PROTOCOL_VERSION;
 use anyhow::{anyhow, bail, Context, Result};
 use da_input::{Frame, InputEvent};
+use da_screen::audio::{AudioCapture, AudioEvent, AudioSink};
 use da_screen::wire::StartRequest;
 use da_screen::{DisplayBounds, HostOptions, ScreenHost, StreamEvent, ViewMsg};
 use std::net::SocketAddr;
@@ -59,6 +60,46 @@ impl Drop for ViewGuard<'_> {
 /// Starts a [`ScreenSource`]; see [`Node::set_screen_starter`].
 pub type ScreenStarter =
     Arc<dyn Fn(HostOptions, da_screen::host::Sink) -> Result<Box<dyn ScreenSource>> + Send + Sync>;
+
+/// Starts recording this machine's sound; see [`Node::set_audio_starter`].
+/// Dropping what it returns stops recording.
+pub type AudioStarter = Arc<dyn Fn(AudioSink) -> Result<Box<dyn Send>> + Send + Sync>;
+
+/// Start recording sound off the async threads. Failing to record is not
+/// fatal to the session: the picture carries on without sound.
+async fn start_audio(
+    starter: Option<AudioStarter>,
+    tx: UnboundedSender<AudioEvent>,
+) -> Option<Box<dyn Send>> {
+    let r = tokio::task::spawn_blocking(move || {
+        let sink: AudioSink = Box::new(move |e| {
+            let _ = tx.send(e);
+        });
+        match starter {
+            Some(start) => start(sink),
+            None => AudioCapture::start(sink).map(|c| Box::new(c) as Box<dyn Send>),
+        }
+    })
+    .await;
+    match r {
+        Ok(Ok(c)) => Some(c),
+        Ok(Err(e)) => {
+            tracing::warn!("not sharing sound: {e:#}");
+            None
+        }
+        Err(e) => {
+            tracing::warn!("not sharing sound: {e}");
+            None
+        }
+    }
+}
+
+/// Stop recording sound off the async threads (it can block briefly).
+async fn stop_audio(capture: Option<Box<dyn Send>>) {
+    if let Some(c) = capture {
+        let _ = tokio::task::spawn_blocking(move || drop(c)).await;
+    }
+}
 
 /// If more frames than this are waiting to go out, the network can't keep
 /// up: drop to the next keyframe instead of building a delay.
@@ -200,6 +241,16 @@ impl Node {
         }
         let mut bounds = host.bounds();
 
+        // Sound, if the viewer asked for it and this machine can record it.
+        let audio_starter = self.audio_starter();
+        let can_audio = audio_starter.is_some() || da_screen::audio::capture_supported();
+        let (au_tx, mut au_rx) = unbounded_channel::<AudioEvent>();
+        let mut audio = if req.audio && can_audio {
+            start_audio(audio_starter.clone(), au_tx.clone()).await
+        } else {
+            None
+        };
+
         let result: Result<()> = async {
             let mut out = Vec::with_capacity(256 * 1024);
             let mut skipping = false;
@@ -253,12 +304,43 @@ impl Node {
                                 t.pointer_at(&peer, gx, gy);
                             }
                         }
+                        Some(ViewMsg::SetAudio(on)) => {
+                            if on && audio.is_none() && can_audio {
+                                while au_rx.try_recv().is_ok() {}
+                                audio = start_audio(audio_starter.clone(), au_tx.clone()).await;
+                            } else if !on && audio.is_some() {
+                                stop_audio(audio.take()).await;
+                                // Drop what was already recorded.
+                                while au_rx.try_recv().is_ok() {}
+                            }
+                            tracing::info!(on, "viewer turned the sound {}", if on { "on" } else { "off" });
+                        }
                         Some(other) => tracing::debug!("ignoring {other:?} from viewer"),
                     },
+                    Some(ev) = au_rx.recv() => {
+                        let msg = match ev {
+                            AudioEvent::Format(f) => ViewMsg::AudioInfo(f),
+                            AudioEvent::Chunk(c) if audio.is_some() => ViewMsg::Audio(c),
+                            AudioEvent::Chunk(_) => continue,
+                            AudioEvent::Error(e) => {
+                                tracing::warn!("sound capture stopped: {e}");
+                                stop_audio(audio.take()).await;
+                                continue;
+                            }
+                        };
+                        out.clear();
+                        msg.encode(&mut out);
+                        wr.write_all(&out).await?;
+                        wr.flush().await?;
+                    }
                     ev = ev_rx.recv() => {
                         let Some(ev) = ev else { return Ok(()) };
                         let msg = match ev {
-                            StreamEvent::Info(i) => ViewMsg::Info(i),
+                            StreamEvent::Info(mut i) => {
+                                // Tell the viewer it may switch sound on and off.
+                                i.audio = can_audio;
+                                ViewMsg::Info(i)
+                            }
                             StreamEvent::Error(e) => {
                                 out.clear();
                                 ViewMsg::Error(e.clone()).encode(&mut out);
@@ -294,6 +376,7 @@ impl Node {
         if let Some(t) = &target {
             t.end(&peer);
         }
+        stop_audio(audio.take()).await;
         // Stopping capture can block briefly; keep it off the async threads.
         let _ = tokio::task::spawn_blocking(move || drop(host)).await;
         self.emit(Event::RemoteViewed {
@@ -434,6 +517,13 @@ impl RemoteControl {
     /// Show another of the host's monitors (0 = main).
     pub fn select_display(&self, display: u32) {
         let _ = self.tx.send(ViewMsg::SelectDisplay(display));
+    }
+
+    /// Turn the host's sound on or off. Only send this to a host whose
+    /// stream info says it has sound ([`da_screen::StreamInfo::audio`]):
+    /// hosts from before sound would end the session over it.
+    pub fn set_audio(&self, on: bool) {
+        let _ = self.tx.send(ViewMsg::SetAudio(on));
     }
 
     /// Put the host's pointer at a fraction of its screen (0..=65535).

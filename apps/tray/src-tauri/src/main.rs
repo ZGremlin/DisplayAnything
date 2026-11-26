@@ -56,6 +56,9 @@ struct Settings {
     /// Remote screen quality: "highest", "high", "medium" or "low".
     #[serde(default = "default_quality")]
     pub(crate) remote_quality: String,
+    /// Play the other computer's sound while viewing its screen.
+    #[serde(default = "default_true")]
+    pub(crate) remote_audio: bool,
 }
 
 fn default_resolution() -> String {
@@ -98,6 +101,7 @@ impl Default for Settings {
             pointer_speed: default_speed(),
             remote_resolution: default_resolution(),
             remote_quality: default_quality(),
+            remote_audio: true,
         }
     }
 }
