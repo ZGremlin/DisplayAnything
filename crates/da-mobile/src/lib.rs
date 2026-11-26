@@ -10,8 +10,8 @@
 //! already converted to the AVCC form `AVSampleBufferDisplayLayer` takes.
 
 use anyhow::anyhow;
-use da_core::da_input::{InputEvent, MouseButton};
 use da_core::da_input::keymap::LSHIFT;
+use da_core::da_input::{InputEvent, MouseButton};
 use da_core::da_screen::h264;
 use da_core::da_screen::wire::StreamSettings;
 use da_core::da_screen::ViewMsg;
