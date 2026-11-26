@@ -5,7 +5,7 @@ Use your own computers together over your own network: see and control one compu
 - **Entirely local.** Your computers connect straight to each other by IP address. There is no account, no sign-in, no cloud server and no relay in the middle. The picture, your keystrokes and your clipboard never leave your network.
 - **No internet needed.** Once it's installed, DisplayAnything never contacts the internet. It keeps working with the internet unplugged, as long as the computers can reach each other.
 - **Works over a VPN.** If your VPN gives your devices private addresses (most home and office VPNs, such as WireGuard or OpenVPN, do), you can pair and connect across it just like on your home network. See [Using it over a VPN](#using-it-over-a-vpn) for the details.
-- **Completely free.** No subscription, no trial, no paid tier, no ads. The code is right here, under the MIT licence.
+- **Completely free.** No subscription, no trial, no paid tier, no ads. The code is open source under the [MIT licence](LICENSE): anyone may use, copy, change and share it, including commercially.
 
 ![The DisplayAnything window on a Windows PC, paired with a Mac mini](docs/images/tray-window.png)
 
@@ -164,5 +164,9 @@ Known limits:
 | `crates/da-agent` | Command-line agent |
 | `apps/tray` | Tauri tray app: `src-tauri` (Rust) and `ui` (plain HTML and JS, no build step) |
 | `scripts/DisplayAnythingInstall.sh` | macOS install and permissions helper |
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
 
 The iPhone and iPad app (`apps/ios`, `crates/da-mobile`) arrives with pull request #6.
