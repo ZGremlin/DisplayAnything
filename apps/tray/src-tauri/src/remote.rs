@@ -88,6 +88,7 @@ impl Viewers {
     /// The window closed: end its session (dropping the presenter and the
     /// connection, which tells the host to stop capturing).
     pub fn window_closed(&self, label: &str) {
+        tracing::info!(window = label, "viewer window closed");
         let mut g = self.inner.lock().unwrap();
         if let Some(s) = g.sessions.remove(label) {
             s.task.abort();
@@ -177,6 +178,7 @@ fn area_of(w: &tauri::Window) -> Area {
 fn on_grab(app: &AppHandle, inner: &Mutex<Inner>, ev: GrabEvent) {
     let mut g = inner.lock().unwrap();
     if let GrabEvent::Panic = ev {
+        tracing::info!("Ctrl+Alt+Esc: closing viewer windows");
         let windows: Vec<tauri::Window> = g.sessions.values().map(|s| s.window.clone()).collect();
         drop(g);
         for w in windows {
@@ -255,6 +257,7 @@ fn start_grab(
     let share = match ensure_share(state) {
         Ok(s) => s,
         Err(e) => {
+            tracing::warn!("viewer is view-only, input capture unavailable: {e}");
             notice(
                 app,
                 format!("Showing the screen only: keyboard and mouse capture is unavailable ({e})"),
@@ -323,6 +326,8 @@ pub async fn open_remote(
         return Ok(());
     }
 
+    let monitor = display;
+    tracing::info!(peer = %peer.name, %addr, ?monitor, "opening viewer");
     // Connect first, so a refusal shows as a message, not an empty window.
     let mut view = state
         .node
@@ -349,6 +354,7 @@ pub async fn open_remote(
 
     // The presenter attaches to the window on the main thread (macOS needs
     // that for its layer; harmless on Windows).
+    tracing::info!(window = %label, "viewer window created");
     let grab = start_grab(&app, &viewers, &state);
     let (tx, rx) = tokio::sync::oneshot::channel();
     let w = window.clone();
@@ -377,10 +383,12 @@ pub async fn open_remote(
         Ok(p) => Arc::new(p),
         Err(e) => {
             let _ = window.destroy();
+            tracing::warn!("viewer presenter failed: {e:#}");
             return Err(format!("could not show the remote screen: {e:#}"));
         }
     };
 
+    tracing::info!("viewer presenter ready");
     let name = peer.name.clone();
     let app2 = app.clone();
     let win = window.clone();
@@ -434,6 +442,7 @@ pub async fn open_remote(
                 }
             }
         };
+        tracing::info!(reason = ?end, "viewer session ended");
         if let Some(text) = end {
             notice(&app2, text);
         }
