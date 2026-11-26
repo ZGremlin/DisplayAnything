@@ -287,8 +287,7 @@ async fn wrong_code_is_a_pairing_failure_and_nothing_is_saved() {
     let err = phone
         .pair(addr.to_string(), Arc::new(NoListener))
         .await
-        .err()
-        .expect("a wrong code must not pair");
+        .expect_err("a wrong code must not pair");
     assert!(matches!(err, DaError::PairingFailed { .. }), "got {err:?}");
     assert!(phone.saved_desktops().is_empty());
     assert!(desktop.trust().peers().is_empty());
