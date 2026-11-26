@@ -2,7 +2,7 @@
 # generates DisplayAnything.xcodeproj (not committed).
 name: DisplayAnything
 options:
-  bundleIdPrefix: com.displayanything
+  bundleIdPrefix: com.JC
   deploymentTarget:
     iOS: "17.0"
 settings:
@@ -43,7 +43,7 @@ targets:
         embed: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.displayanything.viewer
+        PRODUCT_BUNDLE_IDENTIFIER: com.JC.DisplayAnything
         PRODUCT_NAME: DisplayAnything
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
