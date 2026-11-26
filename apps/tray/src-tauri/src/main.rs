@@ -49,6 +49,21 @@ struct Settings {
     /// Pointer speed for the other computer's mouse, in percent.
     #[serde(default = "default_speed")]
     pointer_speed: u16,
+    /// Remote screen picture size: "native", "match" (this computer's
+    /// screen) or "WxH" (largest size, scaled to fit).
+    #[serde(default = "default_resolution")]
+    pub(crate) remote_resolution: String,
+    /// Remote screen quality: "highest", "high", "medium" or "low".
+    #[serde(default = "default_quality")]
+    pub(crate) remote_quality: String,
+}
+
+fn default_resolution() -> String {
+    "native".into()
+}
+
+fn default_quality() -> String {
+    "highest".into()
 }
 
 fn default_speed() -> u16 {
@@ -81,6 +96,8 @@ impl Default for Settings {
             edge: None,
             swap_ctrl_meta: default_swap(),
             pointer_speed: default_speed(),
+            remote_resolution: default_resolution(),
+            remote_quality: default_quality(),
         }
     }
 }
@@ -1133,6 +1150,8 @@ fn main() {
             Some(vec![LAUNCHED_AT_LOGIN]),
         ))
         .setup(|app| {
+            // Viewer window menus (resolution and quality).
+            app.on_menu_event(|app, e| remote::on_menu(app, e.id.as_ref()));
             let data_dir = da_core::default_data_dir()?;
             let name = da_core::device_name(&data_dir, None)?;
             let identity = Identity::load_or_create(&data_dir, &name)?;
@@ -1255,7 +1274,9 @@ fn main() {
             get_edge,
             set_edge,
             set_edge_locked,
-            remote::open_remote
+            remote::open_remote,
+            remote::remote_settings,
+            remote::set_remote_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running DisplayAnything");

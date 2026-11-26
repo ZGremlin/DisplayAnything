@@ -47,6 +47,8 @@ kbd { font: 12px ui-monospace, "SF Mono", Consolas, monospace; border: 1px solid
 .name-row { display: flex; align-items: baseline; gap: 8px; }
 #name { cursor: text; }
 .actions { display: flex; gap: 12px; flex-shrink: 0; }
+.screen-opts { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.screen-opts p { flex-basis: 100%; margin: 0; }
 .screens { display: inline-flex; gap: 4px; }
 .screens button { padding: 8px 10px; background: transparent; color: var(--text); border: 1px solid var(--line); }
 .screens button.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }

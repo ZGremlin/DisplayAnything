@@ -14,7 +14,7 @@
 
 use crate::{ensure_share, fp_from, AppState, UiEvent};
 use da_core::da_input::{GrabEvent, InputEvent, MouseButton};
-use da_core::da_screen::wire::StartRequest;
+use da_core::da_screen::wire::{StartRequest, StreamSettings};
 use da_core::da_screen::{viewer::fit, Presenter, ViewMsg};
 use da_core::{InputShare, RemoteControl, DEFAULT_PORT};
 use raw_window_handle::HasWindowHandle;
@@ -59,6 +59,9 @@ struct Inner {
     /// Where captured input goes while any viewer is open.
     grab: Option<UnboundedSender<GrabEvent>>,
     share: Option<Arc<InputShare>>,
+    /// macOS: the "Remote screen" menu-bar menu.
+    #[cfg(target_os = "macos")]
+    mac_menu: Option<tauri::menu::Submenu<tauri::Wry>>,
     /// Per peer fingerprint: how many monitors it has (from its last
     /// stream) and the one last shown, for the monitor picker.
     screens: HashMap<String, Screens>,
@@ -88,6 +91,7 @@ impl Viewers {
     /// The window closed: end its session (dropping the presenter and the
     /// connection, which tells the host to stop capturing).
     pub fn window_closed(&self, label: &str) {
+        tracing::info!(window = label, "viewer window closed");
         let mut g = self.inner.lock().unwrap();
         if let Some(s) = g.sessions.remove(label) {
             s.task.abort();
@@ -177,6 +181,7 @@ fn area_of(w: &tauri::Window) -> Area {
 fn on_grab(app: &AppHandle, inner: &Mutex<Inner>, ev: GrabEvent) {
     let mut g = inner.lock().unwrap();
     if let GrabEvent::Panic = ev {
+        tracing::info!("Ctrl+Alt+Esc: closing viewer windows");
         let windows: Vec<tauri::Window> = g.sessions.values().map(|s| s.window.clone()).collect();
         drop(g);
         for w in windows {
@@ -255,6 +260,7 @@ fn start_grab(
     let share = match ensure_share(state) {
         Ok(s) => s,
         Err(e) => {
+            tracing::warn!("viewer is view-only, input capture unavailable: {e}");
             notice(
                 app,
                 format!("Showing the screen only: keyboard and mouse capture is unavailable ({e})"),
@@ -323,12 +329,18 @@ pub async fn open_remote(
         return Ok(());
     }
 
+    let monitor = display;
+    tracing::info!(peer = %peer.name, %addr, ?monitor, "opening viewer");
+    let settings = stream_settings(&app, &state, None);
     // Connect first, so a refusal shows as a message, not an empty window.
     let mut view = state
         .node
         .open_remote(
             addr,
             StartRequest {
+                max_width: settings.max_width,
+                max_height: settings.max_height,
+                bitrate_kbps: settings.bitrate_kbps,
                 // The monitor asked for, else the one shown last time.
                 display: display.unwrap_or_else(|| {
                     let g = viewers.inner.lock().unwrap();
@@ -340,15 +352,29 @@ pub async fn open_remote(
         .await
         .map_err(|e| format!("Could not open {}'s screen: {e:#}", peer.name))?;
 
-    let window = tauri::window::WindowBuilder::new(&app, &label)
+    let builder = tauri::window::WindowBuilder::new(&app, &label)
         .title(format!("{} (DisplayAnything)", peer.name))
         .inner_size(1280.0, 800.0)
-        .min_inner_size(320.0, 200.0)
+        .min_inner_size(320.0, 200.0);
+    // Resolution and quality menus: on the window itself on Windows, in
+    // the menu bar on macOS.
+    #[cfg(not(target_os = "macos"))]
+    let builder = match build_menu(&app) {
+        Ok(m) => builder.menu(m),
+        Err(e) => {
+            tracing::warn!("no viewer menu: {e}");
+            builder
+        }
+    };
+    #[cfg(target_os = "macos")]
+    refresh_mac_menu(&app, &viewers);
+    let window = builder
         .build()
         .map_err(|e| format!("could not open the viewer window: {e}"))?;
 
     // The presenter attaches to the window on the main thread (macOS needs
     // that for its layer; harmless on Windows).
+    tracing::info!(window = %label, "viewer window created");
     let grab = start_grab(&app, &viewers, &state);
     let (tx, rx) = tokio::sync::oneshot::channel();
     let w = window.clone();
@@ -377,10 +403,12 @@ pub async fn open_remote(
         Ok(p) => Arc::new(p),
         Err(e) => {
             let _ = window.destroy();
+            tracing::warn!("viewer presenter failed: {e:#}");
             return Err(format!("could not show the remote screen: {e:#}"));
         }
     };
 
+    tracing::info!("viewer presenter ready");
     let name = peer.name.clone();
     let app2 = app.clone();
     let win = window.clone();
@@ -434,6 +462,7 @@ pub async fn open_remote(
                 }
             }
         };
+        tracing::info!(reason = ?end, "viewer session ended");
         if let Some(text) = end {
             notice(&app2, text);
         }
@@ -481,4 +510,253 @@ fn fit_window(w: &tauri::Window, width: u32, height: u32) {
     let size = tauri::PhysicalSize::new((width as f64 * k) as u32, (height as f64 * k) as u32);
     let _ = w.set_size(size);
     let _ = w.center();
+}
+
+// ----------------------------------------------------------------------
+// Picture size and quality
+// ----------------------------------------------------------------------
+
+/// Resolution choices: id and label. Sizes are the largest picture; the
+/// remote screen is scaled down to fit, keeping its shape.
+pub const RESOLUTIONS: [(&str, &str); 7] = [
+    ("native", "Full resolution"),
+    ("match", "Match this screen"),
+    ("3840x2160", "3840 x 2160 (4K)"),
+    ("2560x1440", "2560 x 1440"),
+    ("1920x1080", "1920 x 1080"),
+    ("1600x900", "1600 x 900"),
+    ("1280x720", "1280 x 720"),
+];
+
+/// Quality choices: id, label and bitrate in kbit/s.
+pub const QUALITIES: [(&str, &str, u32); 4] = [
+    ("highest", "Highest", 80_000),
+    ("high", "High", 40_000),
+    ("medium", "Medium", 20_000),
+    ("low", "Low", 8_000),
+];
+
+fn bitrate(quality: &str) -> u32 {
+    QUALITIES
+        .iter()
+        .find(|q| q.0 == quality)
+        .map_or(QUALITIES[0].2, |q| q.2)
+}
+
+/// The picture size limit for a resolution choice; (0, 0) = full size.
+/// "Match this screen" uses the monitor `window` is on, else the main
+/// window's, else the primary monitor.
+fn max_size(app: &AppHandle, resolution: &str, window: Option<&tauri::Window>) -> (u32, u32) {
+    match resolution {
+        "native" => (0, 0),
+        "match" => {
+            let mon = window
+                .and_then(|w| w.current_monitor().ok().flatten())
+                .or_else(|| {
+                    app.get_webview_window("main")
+                        .and_then(|w| w.current_monitor().ok().flatten())
+                })
+                .or_else(|| app.primary_monitor().ok().flatten());
+            mon.map_or((0, 0), |m| (m.size().width, m.size().height))
+        }
+        wh => wh
+            .split_once('x')
+            .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+            .unwrap_or((0, 0)),
+    }
+}
+
+fn stream_settings(
+    app: &AppHandle,
+    state: &AppState,
+    window: Option<&tauri::Window>,
+) -> StreamSettings {
+    let (res, q) = {
+        let s = state.settings.lock().unwrap();
+        (s.remote_resolution.clone(), s.remote_quality.clone())
+    };
+    let (max_width, max_height) = max_size(app, &res, window);
+    StreamSettings {
+        max_width,
+        max_height,
+        bitrate_kbps: bitrate(&q),
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct Choice {
+    id: &'static str,
+    label: &'static str,
+}
+
+#[derive(serde::Serialize)]
+pub struct RemoteSettings {
+    resolution: String,
+    quality: String,
+    resolutions: Vec<Choice>,
+    qualities: Vec<Choice>,
+}
+
+/// The remote screen resolution and quality, with the choices.
+#[tauri::command]
+pub fn remote_settings(state: State<'_, AppState>) -> RemoteSettings {
+    let s = state.settings.lock().unwrap();
+    RemoteSettings {
+        resolution: s.remote_resolution.clone(),
+        quality: s.remote_quality.clone(),
+        resolutions: RESOLUTIONS
+            .iter()
+            .map(|&(id, label)| Choice { id, label })
+            .collect(),
+        qualities: QUALITIES
+            .iter()
+            .map(|&(id, label, _)| Choice { id, label })
+            .collect(),
+    }
+}
+
+/// Change the remote screen resolution or quality. Open viewer windows
+/// switch right away.
+#[tauri::command]
+pub fn set_remote_settings(
+    app: AppHandle,
+    resolution: Option<String>,
+    quality: Option<String>,
+) -> Result<(), String> {
+    change_settings(&app, resolution, quality)
+}
+
+fn change_settings(
+    app: &AppHandle,
+    resolution: Option<String>,
+    quality: Option<String>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    {
+        let mut s = state.settings.lock().unwrap();
+        if let Some(r) = resolution {
+            if !RESOLUTIONS.iter().any(|x| x.0 == r) {
+                return Err(format!("unknown resolution {r}"));
+            }
+            s.remote_resolution = r;
+        }
+        if let Some(q) = quality {
+            if !QUALITIES.iter().any(|x| x.0 == q) {
+                return Err(format!("unknown quality {q}"));
+            }
+            s.remote_quality = q;
+        }
+        s.save(&state.data_dir);
+    }
+    let viewers = app.state::<Viewers>();
+    let open: Vec<(RemoteControl, tauri::Window)> = viewers
+        .inner
+        .lock()
+        .unwrap()
+        .sessions
+        .values()
+        .map(|s| (s.control.clone(), s.window.clone()))
+        .collect();
+    for (control, window) in &open {
+        let settings = stream_settings(app, &state, Some(window));
+        tracing::info!(?settings, "changing remote screen settings");
+        control.configure(settings);
+        #[cfg(not(target_os = "macos"))]
+        if let Ok(m) = build_menu(app) {
+            let _ = window.set_menu(m);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    refresh_mac_menu(app, &viewers);
+    let _ = app.emit("da-event", UiEvent::PeersChanged);
+    Ok(())
+}
+
+/// A viewer menu item was chosen.
+pub fn on_menu(app: &AppHandle, id: &str) {
+    let r = if let Some(r) = id.strip_prefix("rv-res:") {
+        change_settings(app, Some(r.to_string()), None)
+    } else if let Some(q) = id.strip_prefix("rv-q:") {
+        change_settings(app, None, Some(q.to_string()))
+    } else {
+        return;
+    };
+    if let Err(e) = r {
+        tracing::warn!("menu: {e}");
+    }
+}
+
+fn build_submenus(
+    app: &AppHandle,
+) -> tauri::Result<(
+    tauri::menu::Submenu<tauri::Wry>,
+    tauri::menu::Submenu<tauri::Wry>,
+)> {
+    use tauri::menu::{CheckMenuItem, IsMenuItem, Submenu};
+    let (res, q) = {
+        let state = app.state::<AppState>();
+        let s = state.settings.lock().unwrap();
+        (s.remote_resolution.clone(), s.remote_quality.clone())
+    };
+    let res_items = RESOLUTIONS
+        .iter()
+        .map(|&(id, label)| {
+            CheckMenuItem::with_id(
+                app,
+                format!("rv-res:{id}"),
+                label,
+                true,
+                id == res,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let q_items = QUALITIES
+        .iter()
+        .map(|&(id, label, _)| {
+            CheckMenuItem::with_id(
+                app,
+                format!("rv-q:{id}"),
+                label,
+                true,
+                id == q,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    fn refs(v: &[CheckMenuItem<tauri::Wry>]) -> Vec<&dyn IsMenuItem<tauri::Wry>> {
+        v.iter().map(|i| i as &dyn IsMenuItem<tauri::Wry>).collect()
+    }
+    let res_menu = Submenu::with_items(app, "Resolution", true, &refs(&res_items))?;
+    let q_menu = Submenu::with_items(app, "Quality", true, &refs(&q_items))?;
+    Ok((res_menu, q_menu))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    let (r, q) = build_submenus(app)?;
+    tauri::menu::Menu::with_items(app, &[&r, &q])
+}
+
+/// macOS: a "Remote screen" menu in the menu bar, rebuilt when the
+/// settings change.
+#[cfg(target_os = "macos")]
+fn refresh_mac_menu(app: &AppHandle, viewers: &Viewers) {
+    use tauri::menu::Submenu;
+    let Some(bar) = app.menu() else { return };
+    let built = build_submenus(app)
+        .and_then(|(r, q)| Submenu::with_items(app, "Remote screen", true, &[&r, &q]));
+    // Menu calls wait for the main thread: never hold the lock over them.
+    let old = viewers.inner.lock().unwrap().mac_menu.take();
+    if let Some(old) = old {
+        let _ = bar.remove(&old);
+    }
+    match built {
+        Ok(m) => {
+            if bar.append(&m).is_ok() {
+                viewers.inner.lock().unwrap().mac_menu = Some(m);
+            }
+        }
+        Err(e) => tracing::warn!("no viewer menu: {e}"),
+    }
 }

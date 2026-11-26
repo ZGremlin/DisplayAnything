@@ -242,7 +242,31 @@ async function onHotkeyDone(ev) {
 
 let peersStale = false;
 
+// Remote screen resolution and quality.
+async function loadRemoteSettings() {
+  const r = await invoke("remote_settings");
+  const fill = (sel, items, value) => {
+    if (document.activeElement === sel) return; // don't fight the person
+    sel.replaceChildren(...items.map(i => {
+      const o = document.createElement("option");
+      o.value = i.id; o.textContent = i.label; return o;
+    }));
+    sel.value = value;
+  };
+  fill($("remote-res"), r.resolutions, r.resolution);
+  fill($("remote-quality"), r.qualities.map(q => ({ id: q.id, label: `Quality: ${q.label}` })), r.quality);
+}
+$("remote-res").addEventListener("change", async (e) => {
+  try { await invoke("set_remote_settings", { resolution: e.target.value, quality: null }); }
+  catch (err) { notice(String(err)); }
+});
+$("remote-quality").addEventListener("change", async (e) => {
+  try { await invoke("set_remote_settings", { resolution: null, quality: e.target.value }); }
+  catch (err) { notice(String(err)); }
+});
+
 async function loadPeers() {
+  loadRemoteSettings();
   // Don't redraw the list under someone typing a new name; catch up after.
   if (document.querySelector("#peers .inline-edit")) { peersStale = true; return; }
   const peers = await invoke("peers");

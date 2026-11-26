@@ -3,7 +3,7 @@
 //! Foundation). Frames stay on the GPU until the encoder hands back the
 //! compressed bytes.
 
-use super::{even, HostOptions, Sink, StreamEvent};
+use super::{HostOptions, Sink, StreamEvent};
 use crate::win::{self, VideoProcessor};
 use crate::wire::{Codec, EncodedFrame, StreamInfo};
 use crate::DisplayInfo;
@@ -14,18 +14,23 @@ use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use windows::core::PCWSTR;
 use windows::core::{Interface, VARIANT};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    ChangeDisplaySettingsExW, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
+    CDS_FULLSCREEN, CDS_TYPE, DEVMODEW, DISP_CHANGE_SUCCESSFUL, DM_DISPLAYFREQUENCY, DM_PELSHEIGHT,
+    DM_PELSWIDTH, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE, HDC, HMONITOR, MONITORINFO,
+    MONITORINFOEXW,
 };
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -44,11 +49,27 @@ pub(super) struct Host {
     stop: Arc<AtomicBool>,
     keyframe: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    /// Puts the monitor's resolution back when the session ends (dropped
+    /// after the capture thread has stopped).
+    _mode: Option<ModeGuard>,
 }
 
 impl Host {
     pub(super) fn start(opts: HostOptions, mut sink: Sink) -> Result<Self> {
-        let mons = monitors();
+        let mut mons = monitors();
+        // Switch the monitor to the resolution the viewer asked for.
+        let mode = match (
+            opts.max_size,
+            mons.get(opts.display as usize).or_else(|| mons.first()),
+        ) {
+            (Some(want), Some(m)) => switch_mode(m.handle, want),
+            _ => None,
+        };
+        if mode.is_some() {
+            // Let the monitor settle before capturing it.
+            std::thread::sleep(Duration::from_millis(1500));
+            mons = monitors();
+        }
         let bounds = mons
             .get(opts.display as usize)
             .or_else(|| mons.first())
@@ -69,6 +90,7 @@ impl Host {
             stop,
             keyframe,
             thread: Some(thread),
+            _mode: mode,
         })
     }
 
@@ -134,6 +156,97 @@ fn monitors() -> Vec<Monitor> {
     // Main display first, then the rest in Windows' order.
     list.sort_by_key(|m| !m.primary);
     list
+}
+
+/// A monitor switched to another resolution for a session. Dropping it
+/// switches back. The switch is also temporary to Windows (CDS_FULLSCREEN),
+/// so it reverts even if this app quits unexpectedly.
+struct ModeGuard {
+    device: Vec<u16>,
+}
+
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        let r = unsafe {
+            ChangeDisplaySettingsExW(
+                PCWSTR(self.device.as_ptr()),
+                None,
+                HWND::default(),
+                CDS_TYPE(0),
+                None,
+            )
+        };
+        tracing::info!(
+            ok = r == DISP_CHANGE_SUCCESSFUL,
+            "restored the screen resolution"
+        );
+    }
+}
+
+fn devmode() -> DEVMODEW {
+    DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    }
+}
+
+/// Switch `monitor` to the mode that best fits `want`; None if it is
+/// already there or the switch failed.
+fn switch_mode(monitor: HMONITOR, want: (u32, u32)) -> Option<ModeGuard> {
+    unsafe {
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        if !GetMonitorInfoW(monitor, &mut info as *mut _ as *mut MONITORINFO).as_bool() {
+            return None;
+        }
+        let len = info
+            .szDevice
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(info.szDevice.len());
+        let mut device = info.szDevice[..len].to_vec();
+        device.push(0);
+        let name = PCWSTR(device.as_ptr());
+
+        let mut cur = devmode();
+        if !EnumDisplaySettingsW(name, ENUM_CURRENT_SETTINGS, &mut cur).as_bool() {
+            return None;
+        }
+        let as_mode = |d: &DEVMODEW| super::Mode {
+            width: d.dmPelsWidth,
+            height: d.dmPelsHeight,
+            hz: d.dmDisplayFrequency,
+            hidpi: false,
+        };
+        let mut all = Vec::new();
+        let mut i = 0;
+        loop {
+            let mut d = devmode();
+            if !EnumDisplaySettingsW(name, ENUM_DISPLAY_SETTINGS_MODE(i), &mut d).as_bool() {
+                break;
+            }
+            i += 1;
+            if d.dmBitsPerPel == cur.dmBitsPerPel {
+                all.push(d);
+            }
+        }
+        let modes: Vec<super::Mode> = all.iter().map(as_mode).collect();
+        let pick = super::pick_mode(&modes, as_mode(&cur), want)?;
+        let mut d = all[pick];
+        d.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+        let r = ChangeDisplaySettingsExW(name, Some(&d), HWND::default(), CDS_FULLSCREEN, None);
+        if r != DISP_CHANGE_SUCCESSFUL {
+            tracing::warn!(?r, "could not change the screen resolution");
+            return None;
+        }
+        tracing::info!(
+            width = d.dmPelsWidth,
+            height = d.dmPelsHeight,
+            hz = d.dmDisplayFrequency,
+            "switched the screen resolution for remote control"
+        );
+        Some(ModeGuard { device })
+    }
 }
 
 pub(super) fn displays() -> Vec<DisplayInfo> {
@@ -273,6 +386,9 @@ fn run(
 struct Encoder {
     width: u32,
     height: u32,
+    /// The captured screen's size (bigger than width x height when the
+    /// picture is scaled down).
+    in_size: (u32, u32),
     fps: u32,
     /// Our copy of the captured frame (BGRA).
     bgra: ID3D11Texture2D,
@@ -293,6 +409,11 @@ struct Encoder {
     out_size: u32,
 }
 
+/// Largest pictures to try, biggest first. Hardware H.264 encoders top out
+/// around 4096 pixels wide (some lower), so wider screens (5120x1440
+/// ultrawides, for one) are scaled down until the encoder accepts them.
+const SIZE_LIMITS: [(u32, u32); 4] = [(4096, 4096), (3840, 2160), (2560, 1600), (1920, 1200)];
+
 impl Encoder {
     fn new(
         device: &ID3D11Device,
@@ -300,8 +421,38 @@ impl Encoder {
         size: SizeInt32,
         opts: &HostOptions,
     ) -> Result<Self> {
-        let (cw, ch) = (size.Width.max(2) as u32, size.Height.max(2) as u32);
-        let (width, height) = (even(cw), even(ch));
+        let full = (size.Width.max(2) as u32, size.Height.max(2) as u32);
+        let wanted = opts.target_size(full);
+        let mut last_err = None;
+        let mut tried = Vec::new();
+        for limit in SIZE_LIMITS {
+            let out = super::fit_within(wanted, limit);
+            if tried.contains(&out) {
+                continue;
+            }
+            tried.push(out);
+            match Self::with_size(device, ctx, full, out, opts) {
+                Ok(e) => return Ok(e),
+                Err(e) => {
+                    tracing::warn!(
+                        width = out.0,
+                        height = out.1,
+                        "encoder refused this size, trying smaller: {e:#}"
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("no video encoder size worked")))
+    }
+
+    fn with_size(
+        device: &ID3D11Device,
+        ctx: &ID3D11DeviceContext,
+        (cw, ch): (u32, u32),
+        (width, height): (u32, u32),
+        opts: &HostOptions,
+    ) -> Result<Self> {
         let bgra = win::texture(
             device,
             cw,
@@ -389,6 +540,7 @@ impl Encoder {
             Ok(Encoder {
                 width,
                 height,
+                in_size: (cw, ch),
                 fps: opts.fps,
                 bgra,
                 vp,
@@ -482,14 +634,21 @@ impl Encoder {
         let slot = if new_picture || self.last.is_none() {
             let slot = self.next;
             self.next = (self.next + 1) % self.nv12.len();
-            let full = RECT {
+            // The whole screen, scaled onto the whole picture.
+            let src = RECT {
+                left: 0,
+                top: 0,
+                right: self.in_size.0 as i32,
+                bottom: self.in_size.1 as i32,
+            };
+            let dst = RECT {
                 left: 0,
                 top: 0,
                 right: self.width as i32,
                 bottom: self.height as i32,
             };
             self.vp
-                .blt(&self.input_view, &self.nv12[slot].1, full, full)?;
+                .blt(&self.input_view, &self.nv12[slot].1, src, dst)?;
             self.last = Some(slot);
             slot
         } else {

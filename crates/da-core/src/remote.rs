@@ -219,25 +219,33 @@ impl Node {
                                 }
                             }
                         }
-                        Some(ViewMsg::SelectDisplay(d)) if d != opts.display => {
+                        Some(msg @ (ViewMsg::SelectDisplay(_) | ViewMsg::Configure(_))) => {
+                            let next = match &msg {
+                                ViewMsg::SelectDisplay(d) => HostOptions { display: *d, ..opts.clone() },
+                                ViewMsg::Configure(c) => opts.with_settings(c),
+                                _ => unreachable!(),
+                            };
+                            if next == opts {
+                                continue;
+                            }
                             // Stop the old capture, throw away what it
-                            // already sent, then capture the other monitor.
+                            // already sent, then start with the new options.
                             let old = std::mem::replace(&mut host, Box::new(NoScreen));
                             let _ = tokio::task::spawn_blocking(move || drop(old)).await;
                             while ev_rx.try_recv().is_ok() {}
                             skipping = false;
-                            let mut next = HostOptions { display: d, ..opts.clone() };
                             host = match start_capture(starter.clone(), next.clone(), ev_tx.clone()).await {
-                                Ok(h) => h,
+                                Ok(h) => {
+                                    opts = next;
+                                    h
+                                }
                                 Err(e) => {
-                                    tracing::warn!("could not switch to display {d}: {e:#}");
-                                    next = opts.clone();
-                                    start_capture(starter.clone(), next.clone(), ev_tx.clone()).await?
+                                    tracing::warn!("could not apply {msg:?}: {e:#}");
+                                    start_capture(starter.clone(), opts.clone(), ev_tx.clone()).await?
                                 }
                             };
-                            opts = next;
                             bounds = host.bounds();
-                            tracing::info!(display = opts.display, "switched shared display");
+                            tracing::info!(?opts, "screen stream options changed");
                         }
                         Some(ViewMsg::Pointer { x, y }) => {
                             if let (Some(t), Some(b)) = (&target, bounds) {
@@ -415,6 +423,11 @@ impl RemoteControl {
         let mut b = Vec::with_capacity(8);
         Frame::Input(e).encode(&mut b);
         let _ = self.tx.send(ViewMsg::Input(b));
+    }
+
+    /// Change the picture size or quality.
+    pub fn configure(&self, settings: da_screen::wire::StreamSettings) {
+        let _ = self.tx.send(ViewMsg::Configure(settings));
     }
 
     /// Show another of the host's monitors (0 = main).

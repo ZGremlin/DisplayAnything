@@ -21,6 +21,7 @@ const TAG_STOP: u8 = 6;
 const TAG_INPUT: u8 = 7;
 const TAG_POINTER: u8 = 8;
 const TAG_SELECT_DISPLAY: u8 = 9;
+const TAG_CONFIGURE: u8 = 10;
 
 const FLAG_KEYFRAME: u8 = 1;
 
@@ -40,6 +41,12 @@ pub struct StartRequest {
     pub fps: u32,
     /// Target bitrate in kbit/s.
     pub bitrate_kbps: u32,
+    /// Largest picture to send; the screen is scaled down to fit, keeping
+    /// its shape. 0 = the screen's own resolution.
+    #[serde(default)]
+    pub max_width: u32,
+    #[serde(default)]
+    pub max_height: u32,
 }
 
 impl Default for StartRequest {
@@ -49,8 +56,19 @@ impl Default for StartRequest {
             fps: 60,
             // Comfortable on wired gigabit, still fine on good Wi-Fi.
             bitrate_kbps: 40_000,
+            max_width: 0,
+            max_height: 0,
         }
     }
+}
+
+/// Picture size and quality, changeable during a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamSettings {
+    /// 0 = the screen's own resolution.
+    pub max_width: u32,
+    pub max_height: u32,
+    pub bitrate_kbps: u32,
 }
 
 /// What the host is sending.
@@ -99,6 +117,8 @@ pub enum ViewMsg {
     Pointer { x: u16, y: u16 },
     /// Viewer -> host: show this monitor instead (0 = main).
     SelectDisplay(u32),
+    /// Viewer -> host: change the picture size or quality.
+    Configure(StreamSettings),
 }
 
 impl ViewMsg {
@@ -110,6 +130,7 @@ impl ViewMsg {
             ViewMsg::Error(m) => (TAG_ERROR, m.as_bytes().to_vec()),
             ViewMsg::Stop => (TAG_STOP, Vec::new()),
             ViewMsg::Input(b) => (TAG_INPUT, b.clone()),
+            ViewMsg::Configure(c) => (TAG_CONFIGURE, serde_json::to_vec(c).unwrap_or_default()),
             ViewMsg::SelectDisplay(d) => (TAG_SELECT_DISPLAY, d.to_be_bytes().to_vec()),
             ViewMsg::Pointer { x, y } => {
                 let mut b = x.to_be_bytes().to_vec();
@@ -153,6 +174,7 @@ impl ViewMsg {
             TAG_ERROR => ViewMsg::Error(String::from_utf8_lossy(body).into_owned()),
             TAG_STOP => ViewMsg::Stop,
             TAG_INPUT => ViewMsg::Input(body.to_vec()),
+            TAG_CONFIGURE => ViewMsg::Configure(serde_json::from_slice(body)?),
             TAG_SELECT_DISPLAY => {
                 if body.len() < 4 {
                     bail!("short display selection");
@@ -221,6 +243,11 @@ mod tests {
         roundtrip(ViewMsg::Input(vec![1, 2, 3]));
         roundtrip(ViewMsg::Pointer { x: 0, y: 65535 });
         roundtrip(ViewMsg::SelectDisplay(2));
+        roundtrip(ViewMsg::Configure(StreamSettings {
+            max_width: 1920,
+            max_height: 1080,
+            bitrate_kbps: 80_000,
+        }));
     }
 
     #[test]
