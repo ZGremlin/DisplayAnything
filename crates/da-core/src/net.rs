@@ -2,7 +2,7 @@
 
 use crate::identity::{Fingerprint, Identity};
 use crate::pairing::{self, Binding, GuardDenied, PairGuard, PakeState, Role};
-use crate::protocol::{read_msg, write_msg, ErrorCode, Intent, Message};
+use crate::protocol::{read_msg, write_msg, DeviceKind, ErrorCode, Intent, Message};
 use crate::tls;
 use crate::trust::{Permissions, TrustStore, TrustedPeer};
 use crate::PROTOCOL_VERSION;
@@ -28,6 +28,8 @@ pub struct Config {
     pub allow_public_addresses: bool,
     /// How long a pairing code stays valid.
     pub pair_code_ttl: Duration,
+    /// What this device is when it dials out (a phone sets `IosViewer`).
+    pub device_kind: DeviceKind,
 }
 
 impl Default for Config {
@@ -35,6 +37,7 @@ impl Default for Config {
         Config {
             allow_public_addresses: false,
             pair_code_ttl: pairing::CODE_TTL,
+            device_kind: DeviceKind::Desktop,
         }
     }
 }
@@ -185,6 +188,11 @@ impl Node {
         &self.identity
     }
 
+    /// What this device says it is when it dials another device.
+    pub fn device_kind(&self) -> DeviceKind {
+        self.config.device_kind
+    }
+
     /// The name other devices currently see for this one.
     pub fn name(&self) -> String {
         self.name.lock().unwrap().clone()
@@ -303,6 +311,7 @@ impl Node {
             version,
             name,
             intent,
+            device_kind,
         } = hello
         else {
             return send_err(&mut tls, ErrorCode::Protocol, "expected hello").await;
@@ -321,7 +330,7 @@ impl Node {
             Intent::Input => self.serve_input(stream, peer_fp, addr).await,
             Intent::Remote => self.serve_remote(stream, peer_fp, addr).await,
             Intent::Pair => {
-                self.respond_pairing(&mut stream, name, peer_fp, exporter, addr)
+                self.respond_pairing(&mut stream, name, device_kind, peer_fp, exporter, addr)
                     .await
             }
         }
@@ -396,6 +405,7 @@ impl Node {
         &self,
         s: &mut TlsStream<TcpStream>,
         peer_name: String,
+        peer_kind: DeviceKind,
         peer_fp: Fingerprint,
         exporter: [u8; 32],
         addr: SocketAddr,
@@ -424,7 +434,9 @@ impl Node {
             expires_in: ttl,
         });
         let outcome = self
-            .run_responder(s, &code, ttl, &peer_name, peer_fp, exporter, addr)
+            .run_responder(
+                s, &code, ttl, &peer_name, peer_kind, peer_fp, exporter, addr,
+            )
             .await;
         let mut guard = self.guard.lock().unwrap();
         match &outcome {
@@ -459,6 +471,7 @@ impl Node {
         code: &str,
         ttl: Duration,
         peer_name: &str,
+        peer_kind: DeviceKind,
         peer_fp: Fingerprint,
         exporter: [u8; 32],
         addr: SocketAddr,
@@ -515,7 +528,21 @@ impl Node {
             let _ = send_err(s, ErrorCode::PairingFailed, "wrong pairing code").await;
             return PairOutcome::WrongCode;
         }
-        let granted = Permissions::default();
+        // A phone or tablet only views and controls this screen, so it
+        // gets just the remote control permission (off until the person
+        // turns it on) and is never dialled by this device.
+        let (granted, auto_connect) = if peer_kind.is_desktop() {
+            (Permissions::default(), true)
+        } else {
+            (
+                Permissions {
+                    remote_control: false,
+                    display_takeover: false,
+                    input_takeover: false,
+                },
+                false,
+            )
+        };
         let stored = self.trust().upsert(TrustedPeer {
             name: peer_name.to_string(),
             fingerprint: peer_fp.to_hex(),
@@ -523,8 +550,9 @@ impl Node {
             paired_at_unix: now_unix(),
             last_addr: Some(addr.ip().to_string()),
             port: None,
-            auto_connect: true,
+            auto_connect,
             custom_name: false,
+            device_kind: peer_kind,
         });
         if let Err(e) = stored {
             return PairOutcome::NoGuess(e.context("saving trusted peer"));
@@ -598,6 +626,7 @@ impl Node {
                 version: PROTOCOL_VERSION,
                 name: self.name(),
                 intent: Intent::Pair,
+                device_kind: self.device_kind(),
             },
         )
         .await?;
@@ -654,6 +683,8 @@ impl Node {
             port: Some(addr.port()),
             auto_connect: true,
             custom_name: false,
+            // The responder is the desktop that showed the code.
+            device_kind: DeviceKind::Desktop,
         };
         self.trust().upsert(peer.clone())?;
         let _ = write_msg(&mut s, &Message::Bye).await;
@@ -676,6 +707,7 @@ impl Node {
                 version: PROTOCOL_VERSION,
                 name: self.name(),
                 intent: Intent::Connect,
+                device_kind: self.device_kind(),
             },
         )
         .await?;

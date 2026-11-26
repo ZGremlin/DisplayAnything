@@ -54,7 +54,7 @@ impl AutoConnector {
             .trust()
             .peers()
             .iter()
-            .filter(|p| p.auto_connect)
+            .filter(|p| p.auto_connect && !p.is_viewer_only())
             .filter_map(|p| p.fingerprint())
             .collect();
         self.tasks.retain(|fp, t| {
@@ -89,7 +89,8 @@ async fn maintain(node: Arc<Node>, fp: Fingerprint, use_mdns: bool) {
         let Some(peer) = node.trust().get(&fp).cloned() else {
             return;
         };
-        if !peer.auto_connect {
+        // Phones and tablets listen for nothing, so never dial them.
+        if !peer.auto_connect || peer.is_viewer_only() {
             return;
         }
         let port = peer.port.unwrap_or(DEFAULT_PORT);
@@ -143,7 +144,10 @@ async fn maintain(node: Arc<Node>, fp: Fingerprint, use_mdns: bool) {
         });
         loop {
             tokio::time::sleep(KEEPALIVE).await;
-            let still_wanted = node.trust().get(&fp).is_some_and(|p| p.auto_connect);
+            let still_wanted = node
+                .trust()
+                .get(&fp)
+                .is_some_and(|p| p.auto_connect && !p.is_viewer_only());
             if !still_wanted {
                 let _ = s.close().await;
                 node.emit(Event::PeerOffline {

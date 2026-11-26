@@ -318,6 +318,7 @@ impl Node {
                 version: PROTOCOL_VERSION,
                 name: self.name(),
                 intent: Intent::Remote,
+                device_kind: self.device_kind(),
             },
         )
         .await?;

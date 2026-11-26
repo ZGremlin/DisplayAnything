@@ -171,6 +171,9 @@ struct PeerView {
     short: String,
     last_addr: Option<String>,
     auto_connect: bool,
+    /// An iPhone or iPad: it views this computer, so it has no keyboard,
+    /// monitor or auto-connect settings here.
+    viewer_only: bool,
     online: bool,
     permissions: Permissions,
     custom_name: bool,
@@ -271,6 +274,7 @@ fn peers(state: State<'_, AppState>, viewers: State<'_, remote::Viewers>) -> Vec
                 short: p.fingerprint().map(|f| f.short()).unwrap_or_default(),
                 last_addr: p.last_addr.clone(),
                 auto_connect: p.auto_connect,
+                viewer_only: p.is_viewer_only(),
                 online: online.contains(&p.fingerprint),
                 permissions: p.permissions,
                 custom_name: p.custom_name,

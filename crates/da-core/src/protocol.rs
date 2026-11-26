@@ -25,6 +25,24 @@ pub enum Intent {
     Remote,
 }
 
+/// What kind of device is on the other end of a connection. Desktops are
+/// the default; a phone or tablet only views and controls a screen, so the
+/// desktop saves it view-only and never dials it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKind {
+    #[default]
+    Desktop,
+    /// iPhone or iPad running the DisplayAnything viewer.
+    IosViewer,
+}
+
+impl DeviceKind {
+    pub fn is_desktop(&self) -> bool {
+        *self == DeviceKind::Desktop
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
@@ -32,6 +50,10 @@ pub enum Message {
         version: u32,
         name: String,
         intent: Intent,
+        /// Optional, and left out for desktops, so older builds see the
+        /// same message they always did.
+        #[serde(default, skip_serializing_if = "DeviceKind::is_desktop")]
+        device_kind: DeviceKind,
     },
     /// Responder is now showing a pairing code to its user.
     PairCodeShown {
@@ -123,9 +145,41 @@ mod tests {
             version: 1,
             name: "pc".into(),
             intent: Intent::Pair,
+            device_kind: DeviceKind::IosViewer,
         };
         write_msg(&mut a, &m).await.unwrap();
         assert_eq!(read_msg(&mut b).await.unwrap(), m);
+    }
+
+    #[test]
+    fn desktop_hello_is_the_same_as_before() {
+        let m = Message::Hello {
+            version: 1,
+            name: "pc".into(),
+            intent: Intent::Connect,
+            device_kind: DeviceKind::Desktop,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("device_kind"),
+            "old builds must see no new field: {json}"
+        );
+        // A hello from an older build has no device_kind and reads as a desktop.
+        let old = r#"{"type":"hello","version":1,"name":"pc","intent":"connect"}"#;
+        assert_eq!(serde_json::from_str::<Message>(old).unwrap(), m);
+    }
+
+    #[test]
+    fn phone_hello_says_what_it_is() {
+        let m = Message::Hello {
+            version: 1,
+            name: "ipad".into(),
+            intent: Intent::Pair,
+            device_kind: DeviceKind::IosViewer,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains(r#""device_kind":"ios_viewer""#), "{json}");
+        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), m);
     }
 
     #[tokio::test]

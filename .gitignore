@@ -3,3 +3,9 @@
 **/dist
 .DS_Store
 apps/tray/src-tauri/gen
+
+# iOS build output (scripts/build-ios.sh and XcodeGen)
+apps/ios/DisplayAnything/Core/Generated/
+apps/ios/DisplayAnything.xcodeproj/
+apps/ios/Local.xcconfig
+target/ios/

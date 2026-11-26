@@ -1,6 +1,7 @@
 //! Trust store: the peers this device has paired with, and what each may do.
 
 use crate::identity::Fingerprint;
+use crate::protocol::DeviceKind;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -45,6 +46,10 @@ pub struct TrustedPeer {
     /// announces for itself are not applied.
     #[serde(default)]
     pub custom_name: bool,
+    /// What kind of device this is. Older saved files have none, so they
+    /// read as desktops.
+    #[serde(default)]
+    pub device_kind: DeviceKind,
 }
 
 fn default_true() -> bool {
@@ -54,6 +59,11 @@ fn default_true() -> bool {
 impl TrustedPeer {
     pub fn fingerprint(&self) -> Option<Fingerprint> {
         Fingerprint::from_hex(&self.fingerprint).ok()
+    }
+
+    /// True for phones and tablets: they are never dialled by this device.
+    pub fn is_viewer_only(&self) -> bool {
+        !self.device_kind.is_desktop()
     }
 }
 
@@ -232,6 +242,7 @@ mod tests {
                 port: None,
                 auto_connect: true,
                 custom_name: false,
+                device_kind: DeviceKind::Desktop,
             })
             .unwrap();
         }
