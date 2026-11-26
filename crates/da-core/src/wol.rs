@@ -64,8 +64,8 @@ impl std::fmt::Display for MacAddr {
 /// The 102-byte magic packet for `mac`.
 pub fn magic_packet(mac: MacAddr) -> [u8; 102] {
     let mut p = [0xFFu8; 102];
-    for chunk in p[6..].chunks_exact_mut(6) {
-        chunk.copy_from_slice(&mac.0);
+    for i in 0..16 {
+        p[6 + i * 6..12 + i * 6].copy_from_slice(&mac.0);
     }
     p
 }
