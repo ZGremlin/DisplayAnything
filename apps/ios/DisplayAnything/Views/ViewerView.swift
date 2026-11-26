@@ -306,13 +306,21 @@ struct ViewerView: View {
     private var overlay: some View {
         switch session.state {
         case .connecting:
-            ProgressView("Connecting…").tint(.white).foregroundStyle(.white)
+            ProgressView(session.waking ? "Waking \(desktop.name)…" : "Connecting…")
+                .tint(.white).foregroundStyle(.white)
         case .failed(let message):
             VStack(spacing: 12) {
                 Text(message).multilineTextAlignment(.center)
                 HStack {
                     Button("Back") { dismiss() }
                     Button("Try again") { session.start(desktop: desktop, client: store.client) }
+                    // Offered once the computer has told this phone how to
+                    // wake it (it does whenever the phone connects).
+                    if store.canWake(desktop) {
+                        Button("Wake and connect") {
+                            session.start(desktop: desktop, client: store.client, wakeFirst: true)
+                        }
+                    }
                 }
             }
             .padding()
@@ -533,10 +541,19 @@ final class ViewerSession: ObservableObject {
         self.view = view
     }
 
-    func start(desktop: Desktop, client: Client?) {
+    /// True while waiting for a computer woken with Wake-on-LAN to answer.
+    @Published private(set) var waking = false
+
+    /// How long a woken computer gets to come back on the network.
+    private static let wakeTimeout: TimeInterval = 45
+
+    /// Open the computer's screen. With `wakeFirst`, send it a Wake-on-LAN
+    /// packet first and keep trying while it wakes up.
+    func start(desktop: Desktop, client: Client?, wakeFirst: Bool = false) {
         guard let client, let view else { return }
         stop()
         state = .connecting
+        waking = wakeFirst
         let sink = StreamSink(view: view)
         sink.onState = { [weak self] in self?.state = $0 }
         view.needsKeyframe = { [weak self] in
@@ -548,13 +565,36 @@ final class ViewerSession: ObservableObject {
             display: 0, fps: 60, bitrateKbps: q.bitrateKbps,
             maxWidth: q.maxSize.width, maxHeight: q.maxSize.height)
         Task {
-            do {
-                let opened = try await client.openScreen(
-                    fingerprint: desktop.fingerprint, request: request, sink: sink)
-                self.screen = opened
-                self.syncPointer()
-            } catch {
-                self.state = .failed((error as? DaError).map(message) ?? error.localizedDescription)
+            defer { self.waking = false }
+            if wakeFirst {
+                do {
+                    try client.wake(fingerprint: desktop.fingerprint)
+                } catch {
+                    self.state = .failed((error as? DaError).map(message) ?? error.localizedDescription)
+                    return
+                }
+            }
+            // A Mac takes a few seconds to wake and rejoin the network, so
+            // a woken computer that doesn't answer yet is tried again.
+            let deadline = Date().addingTimeInterval(wakeFirst ? Self.wakeTimeout : 0)
+            while true {
+                do {
+                    let opened = try await client.openScreen(
+                        fingerprint: desktop.fingerprint, request: request, sink: sink)
+                    self.screen = opened
+                    self.syncPointer()
+                    return
+                } catch DaError.Unreachable where Date() < deadline {
+                    try? await Task.sleep(for: .seconds(3))
+                } catch {
+                    var text = (error as? DaError).map(message) ?? error.localizedDescription
+                    if wakeFirst, let e = error as? DaError, case .Unreachable = e {
+                        text += "\n\nIt didn't wake. On the Mac, turn on \"Wake for network access\" "
+                            + "in Energy settings and keep it plugged in."
+                    }
+                    self.state = .failed(text)
+                    return
+                }
             }
         }
     }

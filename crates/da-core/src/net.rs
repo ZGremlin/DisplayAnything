@@ -364,6 +364,7 @@ impl Node {
             &Message::Welcome {
                 name: self.name(),
                 granted: peer.permissions,
+                wake_mac: self.own_wake_mac(s.get_ref().0.local_addr().ok()),
             },
         )
         .await?;
@@ -553,6 +554,7 @@ impl Node {
             auto_connect,
             custom_name: false,
             device_kind: peer_kind,
+            wake_mac: None,
         });
         if let Err(e) = stored {
             return PairOutcome::NoGuess(e.context("saving trusted peer"));
@@ -570,6 +572,7 @@ impl Node {
                 &Message::PairOk {
                     name: self.name(),
                     granted,
+                    wake_mac: self.own_wake_mac(s.get_ref().0.local_addr().ok()),
                 },
             )
             .await
@@ -670,8 +673,8 @@ impl Node {
         if !confirmer.verify_peer(&their_mac) {
             bail!("the other device could not prove it knows the code; pairing aborted");
         }
-        let name = match timeout(CONFIRM_TIMEOUT, read_msg(&mut s)).await?? {
-            Message::PairOk { name, .. } => name,
+        let (name, wake_mac) = match timeout(CONFIRM_TIMEOUT, read_msg(&mut s)).await?? {
+            Message::PairOk { name, wake_mac, .. } => (name, wake_mac),
             other => bail!("unexpected reply {other:?}"),
         };
         let peer = TrustedPeer {
@@ -685,6 +688,10 @@ impl Node {
             custom_name: false,
             // The responder is the desktop that showed the code.
             device_kind: DeviceKind::Desktop,
+            wake_mac: wake_mac
+                .as_deref()
+                .and_then(|m| crate::wol::MacAddr::parse(m).ok())
+                .map(|m| m.to_string()),
         };
         self.trust().upsert(peer.clone())?;
         let _ = write_msg(&mut s, &Message::Bye).await;
@@ -712,9 +719,14 @@ impl Node {
         )
         .await?;
         match timeout(HANDSHAKE_TIMEOUT, read_msg(&mut s)).await?? {
-            Message::Welcome { granted, name } => {
+            Message::Welcome {
+                granted,
+                name,
+                wake_mac,
+            } => {
                 self.trust()
                     .note_address(&fp, addr.ip().to_string(), Some(addr.port()))?;
+                self.trust().note_wake_mac(&fp, wake_mac.as_deref())?;
                 self.note_peer_name(&fp, &name);
                 let peer = self.trust().get(&fp).cloned().unwrap_or(peer);
                 Ok(Session {

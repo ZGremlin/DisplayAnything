@@ -14,6 +14,7 @@ pub mod remote;
 pub mod share;
 pub mod tls;
 pub mod trust;
+pub mod wol;
 
 pub use autoconnect::AutoConnector;
 pub use da_input;
@@ -25,6 +26,7 @@ pub use paths::{default_data_dir, device_name, parse_addr};
 pub use remote::{RemoteControl, RemoteView, ScreenSource, ScreenStarter};
 pub use share::{InputShare, ShareStatus};
 pub use trust::{Permissions, TrustStore, TrustedPeer};
+pub use wol::{MacAddr, WakeReport};
 
 /// Default TCP port for the control channel.
 pub const DEFAULT_PORT: u16 = 47800;

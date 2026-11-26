@@ -47,6 +47,29 @@ final class DesktopStore: ObservableObject {
         client?.setDeviceName(name: trimmed)
     }
 
+    /// Whether this desktop told the phone how to wake it. Looked up fresh,
+    /// since the phone learns it whenever it connects.
+    func canWake(_ desktop: Desktop) -> Bool {
+        client?.savedDesktops().first { $0.fingerprint == desktop.fingerprint }?.canWake ?? false
+    }
+
+    /// Send a Wake-on-LAN packet. Returns a message for the person.
+    func wake(_ desktop: Desktop) -> String {
+        guard let client else { return "DisplayAnything didn't start." }
+        do {
+            try client.wake(fingerprint: desktop.fingerprint)
+            return "Sent a wake signal to \(desktop.name). Give it a few seconds, then open it."
+        } catch let error as DaError {
+            switch error {
+            case .NotAllowed(let m), .NotPaired(let m), .Unreachable(let m),
+                 .PairingFailed(let m), .Other(let m):
+                return m
+            }
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     func forget(_ desktop: Desktop) {
         do {
             try client?.forget(fingerprint: desktop.fingerprint)

@@ -71,11 +71,21 @@ pub enum Message {
     PairOk {
         name: String,
         granted: Permissions,
+        /// The sender's hardware (MAC) address on the network this
+        /// connection uses, so the receiver can wake it with Wake-on-LAN
+        /// later. Optional, so older builds still interoperate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake_mac: Option<String>,
     },
     /// Session accepted.
     Welcome {
         name: String,
         granted: Permissions,
+        /// The sender's hardware (MAC) address on the network this
+        /// connection uses, so the receiver can wake it with Wake-on-LAN
+        /// later. Optional, so older builds still interoperate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake_mac: Option<String>,
     },
     /// Keepalive. `name` carries the sender's current device name so a
     /// rename reaches connected peers without reconnecting (optional, so
@@ -180,6 +190,31 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains(r#""device_kind":"ios_viewer""#), "{json}");
         assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), m);
+    }
+
+    #[test]
+    fn wake_address_is_optional_both_ways() {
+        // An older desktop sends no wake_mac; it reads as None.
+        let old = r#"{"type":"welcome","name":"mac","granted":{"remote_control":true,"display_takeover":true,"input_takeover":true}}"#;
+        let Message::Welcome { wake_mac, .. } = serde_json::from_str(old).unwrap() else {
+            panic!("not a welcome");
+        };
+        assert_eq!(wake_mac, None);
+        // A newer one adds it, and an older reader ignores fields it doesn't know.
+        let m = Message::PairOk {
+            name: "mac".into(),
+            granted: Permissions::default(),
+            wake_mac: Some("a4:83:e7:0b:1c:2d".into()),
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains(r#""wake_mac":"a4:83:e7:0b:1c:2d""#), "{json}");
+        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), m);
+        let none = Message::Welcome {
+            name: "pc".into(),
+            granted: Permissions::default(),
+            wake_mac: None,
+        };
+        assert!(!serde_json::to_string(&none).unwrap().contains("wake_mac"));
     }
 
     #[tokio::test]

@@ -339,6 +339,22 @@ async function loadPeers() {
         actions.append(pick);
       }
     }
+    if (!p.online && !p.viewer_only && p.can_wake) {
+      // Wake-on-LAN: a sleeping Mac with "Wake for network access" on wakes,
+      // and it reconnects on its own a few seconds later.
+      const wake = document.createElement("button");
+      wake.textContent = "Wake";
+      wake.title = "Send a Wake-on-LAN packet to wake this computer from sleep";
+      wake.addEventListener("click", async () => {
+        wake.disabled = true;
+        try {
+          await invoke("wake_peer", { fingerprint: p.fingerprint });
+          notice(`Sent a wake packet to ${p.name}. It reconnects on its own once it's awake.`);
+        } catch (e) { notice(String(e)); }
+        finally { wake.disabled = false; }
+      });
+      actions.append(wake);
+    }
     actions.append(rename, forget);
     head.append(title, actions);
 

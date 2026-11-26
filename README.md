@@ -65,6 +65,22 @@ When your keyboard and mouse move to the other computer, the clipboard goes with
 - Copied files arrive in a temporary folder on the other computer and paste like normal files in Explorer or Finder. The last 5 batches are kept.
 - The clipboard is shared through keyboard and mouse sharing, not through a remote screen window.
 
+### Wake a sleeping Mac
+
+Wake a sleeping Mac from another computer or your iPhone, then connect to it, without walking over to it. This uses Wake-on-LAN: the waking device sends a "magic packet" (a UDP broadcast on port 9) on your local network, and the Mac's network card wakes it up.
+
+- **On the Mac, turn on "Wake for network access"** in **System Settings › Energy** (on a MacBook, **Battery › Options**). Older macOS calls it "Wake for Wi-Fi network access" or "Wake for Ethernet network access".
+- **Keep the Mac plugged in.** Macs only wake for the network on power, not on battery.
+- **Connect to it once while it's awake.** Each time a device pairs or connects, the Mac tells it the hardware (MAC) address of the network it's on; that is what the wake packet is addressed to. After updating, connect once with the new build on both sides.
+- **Wake it:**
+  - **Windows or Mac:** a **Wake** button appears next to a saved computer while it's offline. It reconnects on its own a few seconds after it wakes.
+  - **iPhone or iPad:** swipe right on a computer (or touch and hold it) and tap **Wake**. If opening a computer fails, **Wake and connect** wakes it and keeps trying for about 45 seconds.
+  - **Command line:** `da-agent wake <name>`, or `da-agent wake --mac a4:83:e7:0b:1c:2d`.
+- **Same network only.** Wake packets don't cross routers or most VPNs, so this works on your home network, not from outside it.
+- **Ethernet is the most reliable.** Waking over Wi-Fi depends on the Mac model.
+- **On an iPhone or iPad,** iOS blocks broadcast packets for apps without a special Apple permission, so the app also sends the packet straight to the Mac's last address. That works when the phone talked to the Mac recently, or when an Apple TV or HomePod on the network is standing in for the sleeping Mac (Bonjour Sleep Proxy). If waking from the phone doesn't work but waking from another computer does, that's why.
+- Windows PCs don't offer waking yet: they don't send a hardware address, so no Wake button appears for them.
+
 ### Pairing, tray and start-up
 
 - **Pair once with a code:** type the other computer's IP address and click **Pair** (or **Find on network** to look for it). The other computer shows a 6-digit code; type it in, and you're done.
@@ -208,6 +224,7 @@ DisplayAnything is built to run on your network and nowhere else.
 
 - The app connects only to the IP addresses of your own paired computers, on TCP port 47800. It contains no update checks, analytics, crash reporting, licence checks or cloud services, and its window loads nothing from the web (its content security policy allows only the app's own files).
 - **Find on network** and automatic reconnection after an IP change use mDNS (Bonjour), which only talks to devices on your local network.
+- **Wake** sends a Wake-on-LAN packet (UDP port 9) as a broadcast on your local network, and to the sleeping computer's last private address. Nothing else.
 - Connections from addresses that aren't private (anything that could come from the internet) are refused by default, so even a router port-forward can't expose it.
 - Everything a computer knows about its paired devices is stored on that computer.
 
@@ -242,7 +259,7 @@ Known limits:
 
 | Path | What it is |
 | --- | --- |
-| `crates/da-core` | Identity, pairing, trust store, TLS connections, discovery, auto-reconnect, remote control sessions |
+| `crates/da-core` | Identity, pairing, trust store, TLS connections, discovery, auto-reconnect, remote control sessions, Wake-on-LAN |
 | `crates/da-input` | Keyboard and mouse capture and injection (Windows, macOS), key mapping, switching, clipboard |
 | `crates/da-screen` | Screen capture, hardware H.264 encode and decode, the native viewer window |
 | `crates/da-agent` | Command-line agent |

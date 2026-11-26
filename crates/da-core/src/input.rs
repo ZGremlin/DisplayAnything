@@ -90,6 +90,8 @@ impl Node {
             &Message::Welcome {
                 name: self.name(),
                 granted: peer.permissions,
+                // The control session already carries it.
+                wake_mac: None,
             },
         )
         .await?;

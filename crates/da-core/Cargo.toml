@@ -24,6 +24,12 @@ directories.workspace = true
 da-input = { path = "../da-input" }
 da-screen = { path = "../da-screen" }
 socket2 = { version = "0.5", features = ["all"] }
+# Local networks' broadcast addresses, for Wake-on-LAN (already used by mdns-sd).
+if-addrs = "0.13"
+
+[target.'cfg(unix)'.dependencies]
+# getifaddrs, to read this computer's hardware address for Wake-on-LAN.
+libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -106,6 +106,9 @@ pub struct Desktop {
     /// IP address last seen, if any.
     pub address: Option<String>,
     pub port: u16,
+    /// The desktop told this phone its hardware address, so it can be
+    /// woken from sleep with [`Client::wake`].
+    pub can_wake: bool,
 }
 
 fn desktop_of(p: &TrustedPeer) -> Desktop {
@@ -114,6 +117,7 @@ fn desktop_of(p: &TrustedPeer) -> Desktop {
         name: p.name.clone(),
         address: p.last_addr.clone(),
         port: p.port.unwrap_or(DEFAULT_PORT),
+        can_wake: p.wake_mac.is_some(),
     }
 }
 
@@ -262,6 +266,24 @@ impl Client {
     /// Stop a pairing that is waiting for a code.
     pub fn cancel_pairing(&self) {
         self.pending_code.lock().unwrap().take();
+    }
+
+    /// Wake a sleeping desktop with a Wake-on-LAN magic packet. Returns as
+    /// soon as the packets are sent: there is no reply, so open the screen
+    /// afterwards (a Mac takes a few seconds to wake) to find out whether
+    /// it worked. Fails if the desktop never told this phone how to wake
+    /// it, or nothing could be sent on this network.
+    pub fn wake(&self, fingerprint: String) -> Result<(), DaError> {
+        let fp = Fingerprint::from_hex(&fingerprint).map_err(|e| DaError::NotPaired {
+            message: format!("{e:#}"),
+        })?;
+        self.node
+            .wake_peer(&fp)
+            .map(|_| ())
+            .map_err(|e| match classify(e) {
+                DaError::Unreachable { message } => DaError::Other { message },
+                other => other,
+            })
     }
 
     /// Open a desktop's screen. Frames arrive on `sink` until the returned

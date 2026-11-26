@@ -6,7 +6,7 @@ DisplayAnything is a local-network app for viewing and controlling a computer fr
 
 ## Information the app uses
 
-DisplayAnything uses your local network to discover, pair with, and connect directly to computers running DisplayAnything. To make those connections work, the app processes device names, local network addresses, pairing information, and a device identity. The identity is stored in the iOS Keychain; app preferences are stored on your device.
+DisplayAnything uses your local network to discover, pair with, and connect directly to computers running DisplayAnything. To make those connections work, the app processes device names, local network addresses, pairing information, and a device identity. The identity is stored in the iOS Keychain; app preferences are stored on your device. A paired computer may also tell the app its network hardware (MAC) address, which the app saves on your device and uses only to send a Wake-on-LAN packet on your local network when you ask it to wake that computer.
 
 When you connect to a computer, its screen is streamed directly to your device over an encrypted connection. Touch, pointer, and keyboard input you provide in the viewer is sent to that paired computer. This information is used to provide the features you request; the app developer does not receive it.
 
