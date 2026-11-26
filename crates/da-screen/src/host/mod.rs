@@ -84,8 +84,30 @@ pub fn capture_permission(prompt: bool) -> bool {
     platform::capture_permission(prompt)
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+/// `(w, h)` scaled down (never up) to fit in `limit`, keeping its shape,
+/// with even sides as NV12 needs.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn fit_within((w, h): (u32, u32), (lw, lh): (u32, u32)) -> (u32, u32) {
+    let k = (lw as f64 / w as f64).min(lh as f64 / h as f64).min(1.0);
+    let scale = |v: u32| even(((v as f64 * k).round() as u32).max(2));
+    (scale(w), scale(h))
+}
+
 /// Round down to an even number: 4:2:0 video needs even sizes.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub(crate) fn even(v: u32) -> u32 {
     v & !1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wide_screens_fit_the_encoder() {
+        assert_eq!(fit_within((5120, 1440), (4096, 4096)), (4096, 1152));
+        assert_eq!(fit_within((2560, 1440), (4096, 4096)), (2560, 1440));
+        assert_eq!(fit_within((3840, 2160), (2560, 1600)), (2560, 1440));
+        assert_eq!(fit_within((1365, 767), (4096, 4096)), (1364, 766));
+    }
 }

@@ -3,7 +3,7 @@
 //! Foundation). Frames stay on the GPU until the encoder hands back the
 //! compressed bytes.
 
-use super::{even, HostOptions, Sink, StreamEvent};
+use super::{HostOptions, Sink, StreamEvent};
 use crate::win::{self, VideoProcessor};
 use crate::wire::{Codec, EncodedFrame, StreamInfo};
 use crate::DisplayInfo;
@@ -293,6 +293,11 @@ struct Encoder {
     out_size: u32,
 }
 
+/// Largest pictures to try, biggest first. Hardware H.264 encoders top out
+/// around 4096 pixels wide (some lower), so wider screens (5120x1440
+/// ultrawides, for one) are scaled down until the encoder accepts them.
+const SIZE_LIMITS: [(u32, u32); 4] = [(4096, 4096), (3840, 2160), (2560, 1600), (1920, 1200)];
+
 impl Encoder {
     fn new(
         device: &ID3D11Device,
@@ -300,8 +305,37 @@ impl Encoder {
         size: SizeInt32,
         opts: &HostOptions,
     ) -> Result<Self> {
-        let (cw, ch) = (size.Width.max(2) as u32, size.Height.max(2) as u32);
-        let (width, height) = (even(cw), even(ch));
+        let full = (size.Width.max(2) as u32, size.Height.max(2) as u32);
+        let mut last_err = None;
+        let mut tried = Vec::new();
+        for limit in SIZE_LIMITS {
+            let out = super::fit_within(full, limit);
+            if tried.contains(&out) {
+                continue;
+            }
+            tried.push(out);
+            match Self::with_size(device, ctx, full, out, opts) {
+                Ok(e) => return Ok(e),
+                Err(e) => {
+                    tracing::warn!(
+                        width = out.0,
+                        height = out.1,
+                        "encoder refused this size, trying smaller: {e:#}"
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("no video encoder size worked")))
+    }
+
+    fn with_size(
+        device: &ID3D11Device,
+        ctx: &ID3D11DeviceContext,
+        (cw, ch): (u32, u32),
+        (width, height): (u32, u32),
+        opts: &HostOptions,
+    ) -> Result<Self> {
         let bgra = win::texture(
             device,
             cw,
