@@ -1,6 +1,7 @@
 //! The input channel end to end on loopback, with a recording target in
 //! place of the OS injector.
 
+use da_core::da_input::clipboard::Clip;
 use da_core::da_input::{Frame, InputEvent, MouseButton};
 use da_core::{Config, Event, Identity, InputTarget, Node, Permissions, TrustStore, TrustedPeer};
 use std::net::SocketAddr;
@@ -112,7 +113,7 @@ async fn events_arrive_in_order_and_clipboard_round_trips() {
     assert_eq!(got, want);
 
     let text = link.request_clipboard(Duration::from_secs(2)).await;
-    assert_eq!(text.as_deref(), Some("from the mac"));
+    assert_eq!(text, Some(Clip::Text("from the mac".into())));
 
     // Dropping the link sends ReleaseAll and the target is told it ended.
     drop(link);
