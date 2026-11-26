@@ -91,15 +91,22 @@ struct ViewerView: View {
                 }
             }
             session.onPan = { delta in
-                offset = clampedOffset(CGSize(
+                let next = clampedOffset(CGSize(
                     width: offset.width + delta.x, height: offset.height + delta.y))
+                offset = next
+                // Hand the session the offset actually used (after clamping)
+                // right away, so the cursor it draws matches the picture.
+                session.layout.offset = next
             }
             session.onResetZoom = {
                 withAnimation(.snappy) { scale = 1; offset = .zero }
             }
             session.start(desktop: desktop, client: store.client)
         }
-        .onChange(of: mode) { _, _ in session.releaseAll() }
+        .onChange(of: mode) { _, _ in
+            session.releaseAll()
+            session.syncPointer()
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { session.releaseAll() }
         }
@@ -467,6 +474,7 @@ final class ViewerSession: ObservableObject {
                 let opened = try await client.openScreen(
                     fingerprint: desktop.fingerprint, request: request, sink: sink)
                 self.screen = opened
+                self.syncPointer()
             } catch {
                 self.state = .failed((error as? DaError).map(message) ?? error.localizedDescription)
             }
@@ -584,10 +592,13 @@ final class ViewerSession: ObservableObject {
         if p.y > size.height - margin { pan.y = (size.height - margin) - p.y }
         guard pan != .zero else { return }
         onPan?(pan)
-        // The view hands back the new layout asynchronously; keep ours in
-        // step meanwhile so fast moves don't overshoot.
-        layout.offset.width += pan.x
-        layout.offset.height += pan.y
+    }
+
+    /// Put the computer's pointer where the phone's cursor is, so the two
+    /// start out together (on connect and when switching to Trackpad).
+    func syncPointer() {
+        guard mode == .cursor else { return }
+        pointAt(cursor)
     }
 }
 
