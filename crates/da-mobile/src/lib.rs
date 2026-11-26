@@ -340,18 +340,18 @@ impl Client {
 
 /// A mouse button the phone can press on the desktop.
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
-pub enum Button {
+pub enum PointerButton {
     Left,
     Right,
     Middle,
 }
 
-impl From<Button> for MouseButton {
-    fn from(b: Button) -> Self {
+impl From<PointerButton> for MouseButton {
+    fn from(b: PointerButton) -> Self {
         match b {
-            Button::Left => MouseButton::Left,
-            Button::Right => MouseButton::Right,
-            Button::Middle => MouseButton::Middle,
+            PointerButton::Left => MouseButton::Left,
+            PointerButton::Right => MouseButton::Right,
+            PointerButton::Middle => MouseButton::Middle,
         }
     }
 }
@@ -399,7 +399,7 @@ impl Screen {
     }
 
     /// Press or release a mouse button on the desktop.
-    pub fn click(&self, button: Button, down: bool) {
+    pub fn click(&self, button: PointerButton, down: bool) {
         self.control.send_input(InputEvent::Button {
             button: button.into(),
             down,
