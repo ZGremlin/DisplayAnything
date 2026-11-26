@@ -10,12 +10,27 @@ settings:
     SWIFT_VERSION: "5.10"
     TARGETED_DEVICE_FAMILY: "1,2"   # iPhone and iPad
     ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # The Rust core ships an arm64-only simulator slice (Apple silicon Macs).
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 configs:
   Debug: debug
   Release: release
 configFiles:
   Debug: Base.xcconfig
   Release: Base.xcconfig
+# The Rust core is built by its own aggregate target: as a script phase inside
+# the app target, its xcframework output fed back into the same target and
+# Xcode reported a dependency cycle.
+aggregateTargets:
+  ClientCore:
+    buildScripts:
+      - name: Build the client core (Rust)
+        basedOnDependencyAnalysis: false
+        script: |
+          export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:$PATH"
+          "$SRCROOT/../../scripts/build-ios.sh"
+        outputFiles:
+          - $(SRCROOT)/../../target/ios/DAMobile.xcframework/Info.plist
 targets:
   DisplayAnything:
     type: application
@@ -23,15 +38,9 @@ targets:
     sources:
       - path: DisplayAnything
     dependencies:
+      - target: ClientCore
       - framework: ../../target/ios/DAMobile.xcframework
         embed: false
-    preBuildScripts:
-      - name: Build the client core (Rust)
-        basedOnDependencyAnalysis: false
-        script: |
-          "$SRCROOT/../../scripts/build-ios.sh"
-        outputFiles:
-          - $(SRCROOT)/../../target/ios/DAMobile.xcframework/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.displayanything.viewer
