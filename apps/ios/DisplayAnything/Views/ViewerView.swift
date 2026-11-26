@@ -109,6 +109,7 @@ struct ViewerView: View {
         // Everything below sits above the control surface, so touches on it
         // never reach the computer.
         .overlay { edges }
+        .overlay(alignment: .bottomTrailing) { keyboardButton }
         .toolbar(.hidden, for: .navigationBar)
         // Also turns off the system's swipe-from-the-left-edge "back", which
         // would otherwise fight the swipe that opens the control panel.
@@ -167,6 +168,33 @@ struct ViewerView: View {
             keyboard = false
             UIApplication.shared.isIdleTimerDisabled = false
             session.stop()
+        }
+    }
+
+    // MARK: Keyboard button
+
+    /// The one keyboard control: a small round button in the bottom-right
+    /// corner, above the home indicator. It sits clear of the right-edge
+    /// strip (which opens the key bar) and is the only spot of the picture it
+    /// covers; touches elsewhere still reach the computer.
+    @ViewBuilder
+    private var keyboardButton: some View {
+        if session.isLive, !keyBar {
+            Button {
+                keyboard.toggle()
+            } label: {
+                Image(systemName: keyboard ? "keyboard.chevron.compact.down" : "keyboard")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(.black.opacity(0.35), in: Circle())
+                    .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 0.5))
+            }
+            .accessibilityLabel(keyboard ? "Hide keyboard" : "Show keyboard")
+            // Inside the safe area, plus room for the right-edge strip.
+            .padding(.trailing, 30)
+            .padding(.bottom, 12)
+            .transition(.opacity)
         }
     }
 
@@ -309,11 +337,6 @@ struct ViewerView: View {
                     .pickerStyle(.segmented)
                 }
             }
-
-            Toggle(isOn: $keyboard) {
-                Label("Keyboard", systemImage: "keyboard")
-            }
-            .disabled(!session.isLive)
 
             Toggle(isOn: $keyBar) {
                 Label("Key bar", systemImage: "command")
