@@ -285,7 +285,7 @@ async function loadPeers() {
     name.textContent = p.name;
     const meta = document.createElement("div");
     meta.className = "muted";
-    meta.textContent = `${p.online ? "Connected" : "Offline"} · ${p.last_addr || "no address yet"} · ${p.short}`;
+    meta.textContent = `${p.viewer_only ? "iPhone or iPad" : (p.online ? "Connected" : "Offline")} · ${p.last_addr || "no address yet"} · ${p.short}`;
     title.append(dot, name, meta);
     const forget = document.createElement("button");
     forget.className = "link";
@@ -307,7 +307,7 @@ async function loadPeers() {
       }));
     const actions = document.createElement("div");
     actions.className = "actions";
-    if (p.online) {
+    if (p.online && !p.viewer_only) {
       // Opens a window showing that computer's screen (it must allow
       // "May control this desktop" for this computer).
       const control = document.createElement("button");
@@ -344,19 +344,24 @@ async function loadPeers() {
 
     const perms = document.createElement("div");
     perms.className = "perms";
-    const auto = document.createElement("label");
-    const autoCb = document.createElement("input");
-    autoCb.type = "checkbox";
-    autoCb.checked = p.auto_connect;
-    autoCb.addEventListener("change", () =>
-      invoke("set_auto_connect", { fingerprint: p.fingerprint, on: autoCb.checked }).catch((e) => notice(String(e))));
-    auto.append(autoCb, "Connect automatically");
-    perms.append(
-      auto,
-      permToggle(p, "input_takeover", "May control this computer with its keyboard and mouse"),
-      permToggle(p, "display_takeover", "May take over my monitor"),
-      permToggle(p, "remote_control", "May control this desktop"),
-    );
+    if (p.viewer_only) {
+      // A phone or tablet only views and controls this desktop.
+      perms.append(permToggle(p, "remote_control", "May view and control this desktop"));
+    } else {
+      const auto = document.createElement("label");
+      const autoCb = document.createElement("input");
+      autoCb.type = "checkbox";
+      autoCb.checked = p.auto_connect;
+      autoCb.addEventListener("change", () =>
+        invoke("set_auto_connect", { fingerprint: p.fingerprint, on: autoCb.checked }).catch((e) => notice(String(e))));
+      auto.append(autoCb, "Connect automatically");
+      perms.append(
+        auto,
+        permToggle(p, "input_takeover", "May control this computer with its keyboard and mouse"),
+        permToggle(p, "display_takeover", "May take over my monitor"),
+        permToggle(p, "remote_control", "May control this desktop"),
+      );
+    }
     li.append(head, perms);
     ul.append(li);
   }

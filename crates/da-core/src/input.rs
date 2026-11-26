@@ -177,6 +177,7 @@ impl Node {
                 version: PROTOCOL_VERSION,
                 name: self.name(),
                 intent: Intent::Input,
+                device_kind: self.device_kind(),
             },
         )
         .await?;
