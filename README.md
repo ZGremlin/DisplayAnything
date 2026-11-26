@@ -11,6 +11,18 @@ Use your own computers together over your own network: see and control one compu
 
 *The main window (sample devices). It lives in the system tray (Windows) or the menu bar (Mac).*
 
+## Download
+
+**Latest release: [DisplayAnything 0.1.0](https://github.com/ZGremlin/DisplayAnything/releases/latest)** (build 4dbf18c), for Windows and macOS.
+
+| Platform | Download |
+| --- | --- |
+| Windows | `DisplayAnything_0.1.0_x64-setup.exe` |
+| macOS | `DisplayAnything-macOS.zip` and `DisplayAnythingInstall.sh` |
+| Command-line agent (optional) | `da-agent.exe` (Windows), `da-agent-macos.tar.gz` (macOS) |
+
+The builds aren't code-signed, which is why there's no cost and no account involved. On **Windows**, SmartScreen may warn the first time: click **More info**, then **Run anyway**. On a **Mac**, download both files, then run `bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip` (see [Install](#install) for what it does). The iPhone and iPad app isn't in a release yet.
+
 ## What it does today
 
 These features are merged and working on Windows and macOS, in either direction (a PC controlling a Mac, or a Mac controlling a PC).
@@ -83,14 +95,14 @@ The app needs iOS 17 or later. Until it's on the App Store, you build it yoursel
 
 ## Install
 
-Builds are produced for every change by GitHub Actions (the **CI** workflow): download `DisplayAnything-Windows` (an `.exe` installer plus `da-agent.exe`) or `DisplayAnything-macOS` (`DisplayAnything-macOS.zip` plus the agent) from a run's artifacts. Downloading needs the internet once; running it doesn't.
+Get the installers from the [latest release](https://github.com/ZGremlin/DisplayAnything/releases/latest). Newer test builds are produced for every change by GitHub Actions (the **CI** workflow): download `DisplayAnything-Windows` (an `.exe` installer plus `da-agent.exe`) or `DisplayAnything-macOS` (`DisplayAnything-macOS.zip` plus the agent) from a run's artifacts. Downloading needs the internet once; running it doesn't.
 
-**Windows:** run the installer. Windows asks once whether to allow it through the firewall; allow it on private networks.
+**Windows:** run the installer (SmartScreen may warn about an unsigned app: **More info**, then **Run anyway**). Windows asks once whether to allow it through the firewall; allow it on private networks.
 
-**macOS:** no driver or paid Apple account is needed. Download the build, then run:
+**macOS:** no driver or paid Apple account is needed. Download `DisplayAnything-macOS.zip` and `DisplayAnythingInstall.sh` (also in `scripts/`), then run:
 
 ```sh
-bash scripts/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip
+bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip
 ```
 
 With no argument it uses the newest DisplayAnything download in `~/Downloads`. It quits the running copy, installs the app into Applications, clears the quarantine flag, re-signs it locally, and resets the Accessibility, Input Monitoring and Screen Recording grants (every new build counts as a new app, so old grants silently stop working). Then it opens the app and the Settings pages where you switch them back on:
