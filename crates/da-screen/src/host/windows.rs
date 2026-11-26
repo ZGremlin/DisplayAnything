@@ -273,6 +273,9 @@ fn run(
 struct Encoder {
     width: u32,
     height: u32,
+    /// The captured screen's size (bigger than width x height when the
+    /// picture is scaled down).
+    in_size: (u32, u32),
     fps: u32,
     /// Our copy of the captured frame (BGRA).
     bgra: ID3D11Texture2D,
@@ -424,6 +427,7 @@ impl Encoder {
             Ok(Encoder {
                 width,
                 height,
+                in_size: (cw, ch),
                 fps: opts.fps,
                 bgra,
                 vp,
@@ -517,14 +521,21 @@ impl Encoder {
         let slot = if new_picture || self.last.is_none() {
             let slot = self.next;
             self.next = (self.next + 1) % self.nv12.len();
-            let full = RECT {
+            // The whole screen, scaled onto the whole picture.
+            let src = RECT {
+                left: 0,
+                top: 0,
+                right: self.in_size.0 as i32,
+                bottom: self.in_size.1 as i32,
+            };
+            let dst = RECT {
                 left: 0,
                 top: 0,
                 right: self.width as i32,
                 bottom: self.height as i32,
             };
             self.vp
-                .blt(&self.input_view, &self.nv12[slot].1, full, full)?;
+                .blt(&self.input_view, &self.nv12[slot].1, src, dst)?;
             self.last = Some(slot);
             slot
         } else {
