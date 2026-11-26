@@ -112,6 +112,8 @@ struct AppState {
     receiving_from: Mutex<Option<String>>,
     /// Name of a peer actively controlling this computer right now.
     controlled_by: Mutex<Option<String>>,
+    /// Name of a peer viewing and controlling this screen right now.
+    screen_controlled_by: Mutex<Option<String>>,
     /// mDNS advertisement; replaced when this device is renamed.
     advertiser: Mutex<Option<discovery::Advertiser>>,
     /// Which hotkey action is being recorded right now.
@@ -155,6 +157,10 @@ struct PeerView {
     online: bool,
     permissions: Permissions,
     custom_name: bool,
+    /// Its monitors, for the picker (0 = not known until first viewed).
+    screens: u32,
+    /// The monitor its open viewer window shows, if one is open.
+    screen_shown: Option<u32>,
 }
 
 /// Events forwarded to the window.
@@ -231,22 +237,27 @@ fn status(state: State<'_, AppState>) -> Status {
 }
 
 #[tauri::command]
-fn peers(state: State<'_, AppState>) -> Vec<PeerView> {
+fn peers(state: State<'_, AppState>, viewers: State<'_, remote::Viewers>) -> Vec<PeerView> {
     let online = state.online.lock().unwrap().clone();
     let mut v: Vec<PeerView> = state
         .node
         .trust()
         .peers()
         .iter()
-        .map(|p| PeerView {
-            name: p.name.clone(),
-            fingerprint: p.fingerprint.clone(),
-            short: p.fingerprint().map(|f| f.short()).unwrap_or_default(),
-            last_addr: p.last_addr.clone(),
-            auto_connect: p.auto_connect,
-            online: online.contains(&p.fingerprint),
-            permissions: p.permissions,
-            custom_name: p.custom_name,
+        .map(|p| {
+            let screens = viewers.screens_of(&p.fingerprint);
+            PeerView {
+                screens: screens.count,
+                screen_shown: screens.shown,
+                name: p.name.clone(),
+                fingerprint: p.fingerprint.clone(),
+                short: p.fingerprint().map(|f| f.short()).unwrap_or_default(),
+                last_addr: p.last_addr.clone(),
+                auto_connect: p.auto_connect,
+                online: online.contains(&p.fingerprint),
+                permissions: p.permissions,
+                custom_name: p.custom_name,
+            }
         })
         .collect();
     v.sort_by_key(|p| p.name.to_lowercase());
@@ -631,16 +642,11 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                 }),
                 Event::HotkeyRecording(Recording::Done(combo)) => finish_recording(&state, combo),
                 Event::EdgeLocked(_) => Some(UiEvent::EdgeChanged),
-                Event::RemoteViewed { peer, active } => Some(UiEvent::Notice {
-                    text: if active {
-                        format!(
-                            "{peer} is viewing and controlling this screen. Keyboard and mouse \
-                             sharing is paused until they close its window."
-                        )
-                    } else {
-                        format!("{peer} stopped viewing this screen.")
-                    },
-                }),
+                // Shown only by the tray icon turning green.
+                Event::RemoteViewed { peer, active } => {
+                    *state.screen_controlled_by.lock().unwrap() = active.then_some(peer);
+                    Some(UiEvent::InputChanged)
+                }
                 Event::SessionClosed { .. } | Event::Listening { .. } | Event::Rejected { .. } => {
                     None
                 }
@@ -650,7 +656,8 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
             // Green only while control is actually shared: this computer is
             // driving the other one, or the other one is driving this one.
             let sharing = share_status.as_ref().is_some_and(|s| s.remote_active)
-                || state.controlled_by.lock().unwrap().is_some();
+                || state.controlled_by.lock().unwrap().is_some()
+                || state.screen_controlled_by.lock().unwrap().is_some();
             update_tray_icon(&app_e, sharing);
             let remote_peer = state
                 .share
@@ -661,7 +668,12 @@ fn start_background(app: &AppHandle, node: Arc<Node>) {
                 .filter(|s| s.remote_active)
                 .and_then(|s| s.peer);
             if let Some(tray) = app_e.tray_by_id("main") {
+                let screen = state.screen_controlled_by.lock().unwrap().clone();
                 let tip = match (remote_peer, n) {
+                    _ if screen.is_some() => format!(
+                        "DisplayAnything: {} is controlling this screen",
+                        screen.unwrap_or_default()
+                    ),
                     (Some(p), _) => format!("DisplayAnything: keyboard and mouse on {p}"),
                     (None, 0) => "DisplayAnything: no devices connected".to_string(),
                     (None, 1) => "DisplayAnything: 1 device connected".to_string(),
@@ -1165,6 +1177,7 @@ fn main() {
                 input_error: Mutex::new(None),
                 receiving_from: Mutex::new(None),
                 controlled_by: Mutex::new(None),
+                screen_controlled_by: Mutex::new(None),
                 advertiser: Mutex::new(None),
                 recording_action: Mutex::new(None),
                 input_target,

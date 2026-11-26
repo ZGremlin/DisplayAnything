@@ -20,6 +20,7 @@ const TAG_ERROR: u8 = 5;
 const TAG_STOP: u8 = 6;
 const TAG_INPUT: u8 = 7;
 const TAG_POINTER: u8 = 8;
+const TAG_SELECT_DISPLAY: u8 = 9;
 
 const FLAG_KEYFRAME: u8 = 1;
 
@@ -61,6 +62,9 @@ pub struct StreamInfo {
     /// How many monitors the host has, for the viewer's monitor picker.
     #[serde(default)]
     pub displays: u32,
+    /// Which of them this stream shows (0 = main).
+    #[serde(default)]
+    pub display: u32,
 }
 
 /// One encoded video frame (an H.264 access unit in Annex B form).
@@ -93,6 +97,8 @@ pub enum ViewMsg {
     /// Viewer -> host: put the pointer here, as a fraction of the shared
     /// screen (0..=65535 on each axis).
     Pointer { x: u16, y: u16 },
+    /// Viewer -> host: show this monitor instead (0 = main).
+    SelectDisplay(u32),
 }
 
 impl ViewMsg {
@@ -104,6 +110,7 @@ impl ViewMsg {
             ViewMsg::Error(m) => (TAG_ERROR, m.as_bytes().to_vec()),
             ViewMsg::Stop => (TAG_STOP, Vec::new()),
             ViewMsg::Input(b) => (TAG_INPUT, b.clone()),
+            ViewMsg::SelectDisplay(d) => (TAG_SELECT_DISPLAY, d.to_be_bytes().to_vec()),
             ViewMsg::Pointer { x, y } => {
                 let mut b = x.to_be_bytes().to_vec();
                 b.extend_from_slice(&y.to_be_bytes());
@@ -146,6 +153,12 @@ impl ViewMsg {
             TAG_ERROR => ViewMsg::Error(String::from_utf8_lossy(body).into_owned()),
             TAG_STOP => ViewMsg::Stop,
             TAG_INPUT => ViewMsg::Input(body.to_vec()),
+            TAG_SELECT_DISPLAY => {
+                if body.len() < 4 {
+                    bail!("short display selection");
+                }
+                ViewMsg::SelectDisplay(u32::from_be_bytes([body[0], body[1], body[2], body[3]]))
+            }
             TAG_POINTER => {
                 if body.len() < 4 {
                     bail!("short pointer message");
@@ -196,6 +209,7 @@ mod tests {
             height: 1440,
             codec: Codec::H264,
             displays: 2,
+            display: 1,
         }));
         roundtrip(ViewMsg::Video(EncodedFrame {
             keyframe: true,
@@ -206,6 +220,7 @@ mod tests {
         roundtrip(ViewMsg::Stop);
         roundtrip(ViewMsg::Input(vec![1, 2, 3]));
         roundtrip(ViewMsg::Pointer { x: 0, y: 65535 });
+        roundtrip(ViewMsg::SelectDisplay(2));
     }
 
     #[test]

@@ -89,7 +89,8 @@ fn fake_starter(requests: Arc<AtomicU32>, seen: Arc<Mutex<Option<u32>>>) -> da_c
             width: 1920,
             height: 1080,
             codec: Codec::H264,
-            displays: 1,
+            displays: 2,
+            display: opts.display,
         }));
         sink(StreamEvent::Frame(EncodedFrame {
             keyframe: true,
@@ -270,4 +271,34 @@ async fn viewer_input_reaches_the_host_and_pauses_sharing() {
     })
     .await
     .expect("session did not end");
+}
+
+#[tokio::test]
+async fn viewer_can_switch_monitors() {
+    let (host, addr, viewer) = paired().await;
+    allow_remote(&host, &viewer);
+    host.set_screen_starter(Some(fake_starter(
+        Arc::new(AtomicU32::new(0)),
+        Arc::new(Mutex::new(None)),
+    )));
+    let mut view = viewer
+        .open_remote(addr, StartRequest::default())
+        .await
+        .unwrap();
+    match next(&mut view).await {
+        ViewMsg::Info(i) => assert_eq!((i.display, i.displays), (0, 2)),
+        other => panic!("expected info, got {other:?}"),
+    }
+    view.control().select_display(1);
+    // Frames from the old monitor may still be in flight; then the new one.
+    let info = timeout(Duration::from_secs(5), async {
+        loop {
+            if let ViewMsg::Info(i) = next(&mut view).await {
+                return i;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(info.display, 1);
 }

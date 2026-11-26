@@ -99,10 +99,11 @@ impl Host {
             );
         }
         let content = shareable_content()?;
-        let wanted = display_ids()
-            .get(opts.display as usize)
-            .copied()
-            .unwrap_or_else(|| CGMainDisplayID());
+        let ids = display_ids();
+        let (display_index, wanted) = match ids.get(opts.display as usize) {
+            Some(id) => (opts.display, *id),
+            None => (0, CGMainDisplayID()),
+        };
         let displays = unsafe { content.0.displays() };
         let display: Retained<SCDisplay> = displays
             .iter()
@@ -139,6 +140,7 @@ impl Host {
             height,
             codec: Codec::H264,
             displays: display_count,
+            display: display_index,
         }));
 
         let stream = unsafe {

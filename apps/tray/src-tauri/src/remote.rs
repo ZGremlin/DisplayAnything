@@ -39,6 +39,7 @@ struct Area {
 }
 
 struct Session {
+    fingerprint: String,
     task: tauri::async_runtime::JoinHandle<()>,
     control: RemoteControl,
     presenter: Arc<Presenter>,
@@ -58,6 +59,23 @@ struct Inner {
     /// Where captured input goes while any viewer is open.
     grab: Option<UnboundedSender<GrabEvent>>,
     share: Option<Arc<InputShare>>,
+    /// Per peer fingerprint: how many monitors it has (from its last
+    /// stream) and the one last shown, for the monitor picker.
+    screens: HashMap<String, Screens>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Screens {
+    count: u32,
+    shown: u32,
+}
+
+/// What the main window shows for a peer's monitors.
+pub struct PeerScreens {
+    /// Monitors it had last time (0 = not known yet).
+    pub count: u32,
+    /// The one shown now, while its viewer window is open.
+    pub shown: Option<u32>,
 }
 
 /// Running viewer sessions, by window label.
@@ -109,6 +127,16 @@ impl Viewers {
             if let Some(s) = &g.share {
                 s.set_grabbing(false);
             }
+        }
+    }
+
+    pub fn screens_of(&self, fingerprint: &str) -> PeerScreens {
+        let g = self.inner.lock().unwrap();
+        let s = g.screens.get(fingerprint).copied().unwrap_or_default();
+        let open = g.sessions.values().any(|x| x.fingerprint == fingerprint);
+        PeerScreens {
+            count: s.count,
+            shown: open.then_some(s.shown),
         }
     }
 
@@ -263,6 +291,7 @@ pub async fn open_remote(
     state: State<'_, AppState>,
     viewers: State<'_, Viewers>,
     fingerprint: String,
+    display: Option<u32>,
 ) -> Result<(), String> {
     let fp = fp_from(&fingerprint)?;
     let peer = state
@@ -283,6 +312,12 @@ pub async fn open_remote(
         &fingerprint[..fingerprint.len().min(16)]
     );
     if let Some(w) = app.get_window(&label) {
+        // Already open: switch monitors if asked, and bring it forward.
+        if let Some(d) = display {
+            if let Some(s) = viewers.inner.lock().unwrap().sessions.get(&label) {
+                s.control.select_display(d);
+            }
+        }
         let _ = w.unminimize();
         let _ = w.set_focus();
         return Ok(());
@@ -291,7 +326,17 @@ pub async fn open_remote(
     // Connect first, so a refusal shows as a message, not an empty window.
     let mut view = state
         .node
-        .open_remote(addr, StartRequest::default())
+        .open_remote(
+            addr,
+            StartRequest {
+                // The monitor asked for, else the one shown last time.
+                display: display.unwrap_or_else(|| {
+                    let g = viewers.inner.lock().unwrap();
+                    g.screens.get(&fingerprint).map_or(0, |s| s.shown)
+                }),
+                ..Default::default()
+            },
+        )
         .await
         .map_err(|e| format!("Could not open {}'s screen: {e:#}", peer.name))?;
 
@@ -343,6 +388,7 @@ pub async fn open_remote(
     let presenter2 = presenter.clone();
     let inner = viewers.inner.clone();
     let label2 = label.clone();
+    let fp2 = fingerprint.clone();
     let task = tauri::async_runtime::spawn(async move {
         let control = view.control();
         let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -351,8 +397,18 @@ pub async fn open_remote(
             tokio::select! {
                 msg = view.next() => match msg {
                     Some(ViewMsg::Info(info)) => {
+                        let resized = presenter.video_size() != Some((info.width, info.height));
                         presenter.set_video_size(info.width, info.height);
-                        if !sized {
+                        let now = Screens { count: info.displays.max(1), shown: info.display };
+                        let changed = {
+                            let mut g = inner.lock().unwrap();
+                            let old = g.screens.insert(fp2.clone(), now);
+                            old.is_none_or(|o| o.count != now.count || o.shown != now.shown)
+                        };
+                        if changed {
+                            let _ = app2.emit("da-event", UiEvent::PeersChanged);
+                        }
+                        if !sized || resized {
                             sized = true;
                             fit_window(&win, info.width, info.height);
                             let area = area_of(&win);
@@ -381,6 +437,7 @@ pub async fn open_remote(
         if let Some(text) = end {
             notice(&app2, text);
         }
+        let _ = app2.emit("da-event", UiEvent::PeersChanged);
         drop(view);
         let _ = win.destroy();
     });
@@ -388,6 +445,7 @@ pub async fn open_remote(
     viewers.inner.lock().unwrap().sessions.insert(
         label.clone(),
         Session {
+            fingerprint: fingerprint.clone(),
             task,
             control,
             presenter: presenter2,

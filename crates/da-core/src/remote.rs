@@ -64,6 +64,31 @@ pub type ScreenStarter =
 /// up: drop to the next keyframe instead of building a delay.
 const MAX_QUEUED_FRAMES: usize = 3;
 
+/// Stands in while switching monitors.
+struct NoScreen;
+
+impl ScreenSource for NoScreen {
+    fn request_keyframe(&self) {}
+}
+
+/// Start capture off the async threads (macOS waits for the system).
+async fn start_capture(
+    starter: Option<ScreenStarter>,
+    opts: HostOptions,
+    ev_tx: UnboundedSender<StreamEvent>,
+) -> Result<Box<dyn ScreenSource>> {
+    tokio::task::spawn_blocking(move || {
+        let sink: da_screen::host::Sink = Box::new(move |e| {
+            let _ = ev_tx.send(e);
+        });
+        match starter {
+            Some(start) => start(opts, sink),
+            None => ScreenHost::start(opts, sink).map(|h| Box::new(h) as Box<dyn ScreenSource>),
+        }
+    })
+    .await?
+}
+
 /// Read one [`ViewMsg`] at a time from a stream.
 struct MsgReader<R> {
     r: R,
@@ -146,20 +171,10 @@ impl Node {
             None => return Ok(()),
         };
 
-        // Start capture off the async threads (macOS waits for the system).
         let (ev_tx, mut ev_rx) = unbounded_channel::<StreamEvent>();
-        let opts = HostOptions::from(&req);
-        let host = tokio::task::spawn_blocking(move || {
-            let sink: da_screen::host::Sink = Box::new(move |e| {
-                let _ = ev_tx.send(e);
-            });
-            match starter {
-                Some(start) => start(opts, sink),
-                None => ScreenHost::start(opts, sink).map(|h| Box::new(h) as Box<dyn ScreenSource>),
-            }
-        })
-        .await?;
-        let host = match host {
+        let mut opts = HostOptions::from(&req);
+        let host = start_capture(starter.clone(), opts.clone(), ev_tx.clone()).await;
+        let mut host = match host {
             Ok(h) => h,
             Err(e) => {
                 let mut out = Vec::new();
@@ -183,7 +198,7 @@ impl Node {
             let (back, _) = unbounded_channel::<Frame>();
             t.begin(&peer, back);
         }
-        let bounds = host.bounds();
+        let mut bounds = host.bounds();
 
         let result: Result<()> = async {
             let mut out = Vec::with_capacity(256 * 1024);
@@ -203,6 +218,26 @@ impl Node {
                                     t.frame(&peer, Frame::Input(e));
                                 }
                             }
+                        }
+                        Some(ViewMsg::SelectDisplay(d)) if d != opts.display => {
+                            // Stop the old capture, throw away what it
+                            // already sent, then capture the other monitor.
+                            let old = std::mem::replace(&mut host, Box::new(NoScreen));
+                            let _ = tokio::task::spawn_blocking(move || drop(old)).await;
+                            while ev_rx.try_recv().is_ok() {}
+                            skipping = false;
+                            let mut next = HostOptions { display: d, ..opts.clone() };
+                            host = match start_capture(starter.clone(), next.clone(), ev_tx.clone()).await {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    tracing::warn!("could not switch to display {d}: {e:#}");
+                                    next = opts.clone();
+                                    start_capture(starter.clone(), next.clone(), ev_tx.clone()).await?
+                                }
+                            };
+                            opts = next;
+                            bounds = host.bounds();
+                            tracing::info!(display = opts.display, "switched shared display");
                         }
                         Some(ViewMsg::Pointer { x, y }) => {
                             if let (Some(t), Some(b)) = (&target, bounds) {
@@ -380,6 +415,11 @@ impl RemoteControl {
         let mut b = Vec::with_capacity(8);
         Frame::Input(e).encode(&mut b);
         let _ = self.tx.send(ViewMsg::Input(b));
+    }
+
+    /// Show another of the host's monitors (0 = main).
+    pub fn select_display(&self, display: u32) {
+        let _ = self.tx.send(ViewMsg::SelectDisplay(display));
     }
 
     /// Put the host's pointer at a fraction of its screen (0..=65535).

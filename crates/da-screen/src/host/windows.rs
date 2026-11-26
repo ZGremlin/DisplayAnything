@@ -194,12 +194,18 @@ fn run(
     session.StartCapture()?;
 
     let displays = mons.len() as u32;
+    let display = if (opts.display as usize) < mons.len() {
+        opts.display
+    } else {
+        0
+    };
     let mut enc = Encoder::new(&device, &ctx, size, opts)?;
     sink(StreamEvent::Info(StreamInfo {
         width: enc.width,
         height: enc.height,
         codec: Codec::H264,
         displays,
+        display,
     }));
 
     let started = Instant::now();
@@ -229,6 +235,7 @@ fn run(
                     height: enc.height,
                     codec: Codec::H264,
                     displays,
+                    display,
                 }));
                 keyframe.store(true, Ordering::Relaxed);
                 continue;
