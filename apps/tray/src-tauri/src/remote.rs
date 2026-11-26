@@ -114,9 +114,21 @@ impl Viewers {
 
     /// A viewer window moved or was resized.
     pub fn window_moved(&self, label: &str) {
-        let mut g = self.inner.lock().unwrap();
-        if let Some(s) = g.sessions.get_mut(label) {
-            s.area = area_of(&s.window);
+        // Never ask the window anything while holding the lock: off the
+        // main thread that waits for the main thread, which may be waiting
+        // for this lock.
+        let window = self
+            .inner
+            .lock()
+            .unwrap()
+            .sessions
+            .get(label)
+            .map(|s| s.window.clone());
+        if let Some(w) = window {
+            let area = area_of(&w);
+            if let Some(s) = self.inner.lock().unwrap().sessions.get_mut(label) {
+                s.area = area;
+            }
         }
     }
 }
@@ -208,10 +220,10 @@ fn start_grab(
     viewers: &Viewers,
     state: &AppState,
 ) -> Option<UnboundedSender<GrabEvent>> {
-    let mut g = viewers.inner.lock().unwrap();
-    if let Some(tx) = &g.grab {
+    if let Some(tx) = &viewers.inner.lock().unwrap().grab {
         return Some(tx.clone());
     }
+    // Started without holding the lock (it may touch the main thread).
     let share = match ensure_share(state) {
         Ok(s) => s,
         Err(e) => {
@@ -222,6 +234,10 @@ fn start_grab(
             return None;
         }
     };
+    let mut g = viewers.inner.lock().unwrap();
+    if let Some(tx) = &g.grab {
+        return Some(tx.clone());
+    }
     let (tx, mut rx) = unbounded_channel::<GrabEvent>();
     share.set_remote_control(Some(tx.clone()));
     g.share = Some(share);
@@ -339,8 +355,9 @@ pub async fn open_remote(
                         if !sized {
                             sized = true;
                             fit_window(&win, info.width, info.height);
+                            let area = area_of(&win);
                             if let Some(s) = inner.lock().unwrap().sessions.get_mut(&label2) {
-                                s.area = area_of(&win);
+                                s.area = area;
                             }
                         }
                     }
