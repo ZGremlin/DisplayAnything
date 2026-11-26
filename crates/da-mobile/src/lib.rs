@@ -163,6 +163,10 @@ impl Client {
         identity: IdentityBytes,
     ) -> Result<Arc<Self>, DaError> {
         let dir = PathBuf::from(data_dir);
+        // The trust list is written into this folder, so it must exist.
+        std::fs::create_dir_all(&dir).map_err(|e| DaError::Other {
+            message: format!("could not create {}: {e}", dir.display()),
+        })?;
         let trust = TrustStore::load(&dir).map_err(|e| DaError::Other {
             message: format!("could not read the saved desktops: {e:#}"),
         })?;

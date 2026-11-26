@@ -320,3 +320,15 @@ async fn saved_desktops_survive_a_restart_and_can_be_forgotten() {
         .unwrap();
     assert!(phone.saved_desktops().is_empty());
 }
+
+#[test]
+fn creates_its_data_folder_when_missing() {
+    // A first launch: the app's own folder does not exist yet.
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("DisplayAnything");
+    let ident = generate_identity("ipad".into()).unwrap();
+    let phone = Client::new(dir.to_string_lossy().into_owned(), "ipad".into(), ident)
+        .expect("the folder is created on first launch");
+    assert!(phone.saved_desktops().is_empty());
+    assert!(dir.is_dir());
+}

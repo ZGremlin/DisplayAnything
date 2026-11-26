@@ -16,6 +16,7 @@ final class DesktopStore: ObservableObject {
             let dir = try FileManager.default
                 .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 .appendingPathComponent("DisplayAnything", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let client = try Client(dataDir: dir.path, deviceName: name, identity: identity)
             self.client = client
             refresh()
