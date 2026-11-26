@@ -12,7 +12,7 @@ struct ViewerView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = ViewerSession()
 
-    @AppStorage("controlMode") private var mode: ControlMode = .touch
+    @AppStorage("controlMode") private var mode: ControlMode = .cursor
     @State private var keyboard = false
     @State private var panel = false
     @State private var keyBar = false
@@ -85,7 +85,15 @@ struct ViewerView: View {
                 default:
                     scale = clamped(scale * controlPinch)
                     controlPinch = 1
+                    DispatchQueue.main.async { offset = scale <= 1 ? .zero : clampedOffset(offset) }
                 }
+            }
+            session.onPan = { delta in
+                offset = clampedOffset(CGSize(
+                    width: offset.width + delta.x, height: offset.height + delta.y))
+            }
+            session.onResetZoom = {
+                withAnimation(.snappy) { scale = 1; offset = .zero }
             }
             session.start(desktop: desktop, client: store.client)
         }
@@ -184,7 +192,7 @@ struct ViewerView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Control").font(.caption).foregroundStyle(.secondary)
                 Picker("Control", selection: $mode) {
-                    ForEach([ControlMode.touch, .cursor, .view]) { m in
+                    ForEach([ControlMode.cursor, .touch, .view]) { m in
                         Label(m.title, systemImage: m.symbol).tag(m)
                     }
                 }
@@ -228,9 +236,9 @@ struct ViewerView: View {
     private var modeHelp: String {
         switch mode {
         case .touch:
-            return "Tap to click. Drag to drag. Press and hold for a right click, or hold then move to drag. Two fingers scroll."
+            return "Tap to click. Drag to drag. Press and hold for a right click, or hold then move to drag. Two fingers scroll, or move the picture when zoomed in. Pinch to zoom; double-tap with two fingers to reset."
         case .cursor:
-            return "Drag to move the pointer, tap to click, two-finger tap to right click. Press and hold, then move, to drag. Two fingers scroll."
+            return "Drag to move the pointer, tap to click, two-finger tap to right click. Press and hold, then move, to drag. Two fingers scroll, or move the picture when zoomed in. Pinch to zoom; double-tap with two fingers to reset."
         case .view:
             return "Pinch and drag move the picture on this phone. Nothing is sent to the computer."
         }
@@ -242,6 +250,18 @@ struct ViewerView: View {
     }
 
     private var liveScale: CGFloat { clamped(scale * pinch * controlPinch) }
+
+    /// Keep a zoomed picture covering the screen: it can be panned only as
+    /// far as its zoomed size goes past the screen's edges.
+    private func clampedOffset(_ proposed: CGSize) -> CGSize {
+        let l = session.layout
+        let shown = l.shownSize
+        let maxX = max(0, (shown.width - l.size.width) / 2)
+        let maxY = max(0, (shown.height - l.size.height) / 2)
+        return CGSize(
+            width: min(max(proposed.width, -maxX), maxX),
+            height: min(max(proposed.height, -maxY), maxY))
+    }
 
     private func layout(size: CGSize) -> ViewLayout {
         ViewLayout(
@@ -400,6 +420,9 @@ final class ViewerSession: ObservableObject {
     var layout = ViewLayout(size: .zero, scale: 1, offset: .zero, video: .zero)
     /// Pinching in Touch or Trackpad mode still zooms the picture.
     var onPinch: ((UIGestureRecognizer.State, CGFloat) -> Void)?
+    /// Two-finger drag while zoomed in pans the picture on the phone.
+    var onPan: ((CGPoint) -> Void)?
+    var onResetZoom: (() -> Void)?
     private var scrollRemainder = CGPoint.zero
     private var dragging = false
     private var lastHold = CGPoint.zero
@@ -501,7 +524,7 @@ final class ViewerSession: ObservableObject {
     // MARK: Pointer helpers
 
     private var mode: ControlMode {
-        ControlMode(rawValue: UserDefaults.standard.string(forKey: "controlMode") ?? "") ?? .touch
+        ControlMode(rawValue: UserDefaults.standard.string(forKey: "controlMode") ?? "") ?? .cursor
     }
 
     private func clamp(_ p: CGPoint) -> CGPoint {
@@ -621,7 +644,17 @@ extension ViewerSession: ControlSurfaceDelegate {
         }
     }
 
+    func surfaceResetZoom() {
+        onResetZoom?()
+    }
+
     func surfaceScroll(delta: CGPoint) {
+        // Zoomed in: two fingers move the picture here instead of scrolling
+        // the computer.
+        if layout.scale > 1.01 {
+            onPan?(delta)
+            return
+        }
         // Natural scrolling: the content follows the fingers. 120 units is
         // one wheel notch; four units per point of finger movement.
         let x = -delta.x * 4 + scrollRemainder.x

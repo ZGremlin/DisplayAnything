@@ -9,6 +9,7 @@ struct AddDesktopView: View {
     @State private var code = ""
     @State private var phase: Phase = .enterAddress
     @State private var message: String?
+    @StateObject private var finder = NetworkFinder()
 
     enum Phase: Equatable { case enterAddress, pairing, enterCode }
 
@@ -24,6 +25,10 @@ struct AddDesktopView: View {
                 Text("IP address")
             } footer: {
                 Text("Use the address shown in the computer's DisplayAnything window. Port 47800 is assumed unless you add one.")
+            }
+
+            if phase == .enterAddress {
+                findSection
             }
 
             if phase == .enterCode {
@@ -46,6 +51,7 @@ struct AddDesktopView: View {
                 Section { Text(message).foregroundStyle(.red) }
             }
         }
+        .onDisappear { finder.stop() }
         .navigationTitle("Add computer")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -60,6 +66,66 @@ struct AddDesktopView: View {
                     .disabled(!canContinue)
             }
         }
+    }
+
+    @ViewBuilder
+    private var findSection: some View {
+        Section {
+            if finder.state == .idle && finder.computers.isEmpty {
+                Button {
+                    finder.start()
+                } label: {
+                    Label("Find on network", systemImage: "antenna.radiowaves.left.and.right")
+                }
+            } else {
+                ForEach(finder.computers) { computer in
+                    Button {
+                        if let a = computer.address { address = a }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(computer.name).foregroundStyle(.primary)
+                                Text(subtitle(for: computer))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if computer.address != nil, address == computer.address {
+                                Image(systemName: "checkmark").foregroundStyle(.tint)
+                            } else if computer.address == nil, !computer.unreachable {
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(computer.address == nil)
+                }
+                if case .failed(let text) = finder.state {
+                    Text(text).foregroundStyle(.red)
+                    Button("Try again") { finder.start() }
+                } else if finder.computers.isEmpty {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Looking for computers running DisplayAnything…")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } header: {
+            Text("On this network")
+        } footer: {
+            if finder.state == .searching {
+                Text("Tap a computer to use its address. You will still type the code it shows.")
+            }
+        }
+    }
+
+    private func subtitle(for computer: NetworkFinder.Computer) -> String {
+        let paired = computer.fingerprint.map { fp in
+            store.desktops.contains { $0.fingerprint.caseInsensitiveCompare(fp) == .orderedSame }
+        } ?? false
+        let where_ = computer.address
+            ?? (computer.unreachable ? "Couldn't reach it from this phone" : "Finding its address…")
+        return paired ? "\(where_) · already paired" : where_
     }
 
     private var canContinue: Bool {
