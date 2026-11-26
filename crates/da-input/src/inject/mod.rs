@@ -78,6 +78,12 @@ pub(crate) trait Backend {
     fn screens(&self) -> Vec<Rect>;
     /// Put the pointer at this position.
     fn warp(&mut self, x: f64, y: f64);
+    /// Move the pointer to this position the way a mouse would (apps see a
+    /// move, or a drag while a button is held). Used by remote control,
+    /// which sends absolute positions.
+    fn move_to(&mut self, x: f64, y: f64) {
+        self.warp(x, y);
+    }
 }
 
 /// Displays of this machine (empty if unknown or unsupported).
@@ -255,6 +261,12 @@ impl Injector {
             RMETA => RCTRL,
             u => u,
         }
+    }
+
+    /// Move the pointer to an absolute position in global screen
+    /// coordinates (remote control). Held buttons turn it into a drag.
+    pub fn move_to(&mut self, x: f64, y: f64) {
+        self.backend.move_to(x, y);
     }
 
     /// Replay one event. Returns a frame to send back to the controller when

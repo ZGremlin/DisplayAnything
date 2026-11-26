@@ -283,6 +283,38 @@ async function loadPeers() {
       }));
     const actions = document.createElement("div");
     actions.className = "actions";
+    if (p.online) {
+      // Opens a window showing that computer's screen (it must allow
+      // "May control this desktop" for this computer).
+      const control = document.createElement("button");
+      control.textContent = "Control screen";
+      control.title = "Open a window showing this device's screen";
+      control.addEventListener("click", async () => {
+        control.disabled = true;
+        try { await invoke("open_remote", { fingerprint: p.fingerprint, display: null }); notice(""); }
+        catch (e) { notice(String(e)); }
+        finally { control.disabled = false; }
+      });
+      actions.append(control);
+      // Monitor picker, once we know it has more than one: opens that
+      // monitor, or switches the open window to it.
+      if (p.screens > 1) {
+        const pick = document.createElement("span");
+        pick.className = "screens";
+        for (let i = 0; i < p.screens; i++) {
+          const b = document.createElement("button");
+          b.textContent = String(i + 1);
+          b.title = i === 0 ? "Show its main screen" : `Show its screen ${i + 1}`;
+          if (p.screen_shown === i) b.className = "active";
+          b.addEventListener("click", async () => {
+            try { await invoke("open_remote", { fingerprint: p.fingerprint, display: i }); notice(""); }
+            catch (e) { notice(String(e)); }
+          });
+          pick.append(b);
+        }
+        actions.append(pick);
+      }
+    }
     actions.append(rename, forget);
     head.append(title, actions);
 

@@ -47,6 +47,9 @@ kbd { font: 12px ui-monospace, "SF Mono", Consolas, monospace; border: 1px solid
 .name-row { display: flex; align-items: baseline; gap: 8px; }
 #name { cursor: text; }
 .actions { display: flex; gap: 12px; flex-shrink: 0; }
+.screens { display: inline-flex; gap: 4px; }
+.screens button { padding: 8px 10px; background: transparent; color: var(--text); border: 1px solid var(--line); }
+.screens button.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .inline-edit { font: inherit; font-size: 16px; padding: 4px 8px; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--text); min-width: 0; width: 100%; max-width: 280px; }
 footer { margin: 16px 0 4px; font-size: 12px; text-align: center; }
 h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted, inherit); text-transform: uppercase; letter-spacing: .04em; }

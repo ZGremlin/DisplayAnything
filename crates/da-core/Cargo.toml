@@ -22,6 +22,7 @@ mdns-sd.workspace = true
 tracing.workspace = true
 directories.workspace = true
 da-input = { path = "../da-input" }
+da-screen = { path = "../da-screen" }
 socket2 = { version = "0.5", features = ["all"] }
 
 [dev-dependencies]

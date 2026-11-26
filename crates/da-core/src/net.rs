@@ -115,6 +115,12 @@ pub enum Event {
         fingerprint: Fingerprint,
         name: String,
     },
+    /// A peer started (true) or stopped (false) viewing this screen with
+    /// remote control.
+    RemoteViewed {
+        peer: String,
+        active: bool,
+    },
 }
 
 /// Is this address on a local network (private, loopback or link-local)?
@@ -150,6 +156,9 @@ pub struct Node {
     acceptor: TlsAcceptor,
     connector: TlsConnector,
     input_target: Mutex<Option<Arc<dyn crate::input::InputTarget>>>,
+    screen_starter: Mutex<Option<crate::remote::ScreenStarter>>,
+    /// Screen sessions this machine is serving right now.
+    pub(crate) viewers: std::sync::atomic::AtomicUsize,
 }
 
 impl Node {
@@ -167,6 +176,8 @@ impl Node {
             acceptor,
             connector,
             input_target: Mutex::new(None),
+            screen_starter: Mutex::new(None),
+            viewers: Default::default(),
         }))
     }
 
@@ -210,6 +221,22 @@ impl Node {
             });
         }
         Ok(changed)
+    }
+
+    /// Replace how this machine's screen is captured for remote control
+    /// (tests use a fake source). None uses the real screen.
+    pub fn set_screen_starter(&self, starter: Option<crate::remote::ScreenStarter>) {
+        *self.screen_starter.lock().unwrap() = starter;
+    }
+
+    /// Someone is viewing (and may be controlling) this screen. Shared
+    /// keyboard and mouse is paused meanwhile, both ways.
+    pub fn being_viewed(&self) -> bool {
+        self.viewers.load(std::sync::atomic::Ordering::SeqCst) > 0
+    }
+
+    pub(crate) fn screen_starter(&self) -> Option<crate::remote::ScreenStarter> {
+        self.screen_starter.lock().unwrap().clone()
     }
 
     /// Let paired peers (with the input permission) send keyboard and mouse
@@ -292,6 +319,7 @@ impl Node {
         match intent {
             Intent::Connect => self.serve_session(&mut stream, peer_fp, addr, &name).await,
             Intent::Input => self.serve_input(stream, peer_fp, addr).await,
+            Intent::Remote => self.serve_remote(stream, peer_fp, addr).await,
             Intent::Pair => {
                 self.respond_pairing(&mut stream, name, peer_fp, exporter, addr)
                     .await

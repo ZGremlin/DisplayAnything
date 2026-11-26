@@ -41,6 +41,9 @@ pub trait InputTarget: Send + Sync {
     fn frame(&self, peer: &TrustedPeer, frame: Frame) -> Option<Frame>;
     /// The channel closed: release anything still held.
     fn end(&self, peer: &TrustedPeer);
+    /// Remote control: move the pointer to this global position (pixels on
+    /// Windows, points on macOS). Held buttons make it a drag.
+    fn pointer_at(&self, _peer: &TrustedPeer, _x: f64, _y: f64) {}
 }
 
 impl Node {
@@ -63,6 +66,14 @@ impl Node {
                 &mut s,
                 ErrorCode::NotAllowed,
                 "this device does not allow you to use its keyboard and mouse",
+            )
+            .await;
+        }
+        if self.being_viewed() {
+            return send_err(
+                &mut s,
+                ErrorCode::NotAllowed,
+                "this device's screen is being controlled; shared keyboard and mouse is paused",
             )
             .await;
         }
@@ -125,6 +136,9 @@ impl Node {
                             active,
                         });
                         continue;
+                    }
+                    if self.being_viewed() {
+                        continue; // remote control has the keyboard and mouse
                     }
                     if let Some(r) = target.frame(&peer, frame) {
                         reply.clear();
@@ -357,6 +371,7 @@ enum Cmd {
     Begin(UnboundedSender<Frame>),
     Options(InjectorOptions),
     Scale(u16),
+    MoveTo(f64, f64),
     End,
 }
 
@@ -393,6 +408,7 @@ impl PlatformInputTarget {
                         Cmd::Begin(b) => back = Some(b),
                         Cmd::Options(o) => injector.set_options(o),
                         Cmd::Scale(p) => injector.set_sender_scale(p),
+                        Cmd::MoveTo(x, y) => injector.move_to(x, y),
                         Cmd::End => {
                             injector.release_all();
                             injector.reset_edge();
@@ -456,5 +472,9 @@ impl InputTarget for PlatformInputTarget {
 
     fn end(&self, _peer: &TrustedPeer) {
         let _ = self.tx.send(Cmd::End);
+    }
+
+    fn pointer_at(&self, _peer: &TrustedPeer, x: f64, y: f64) {
+        let _ = self.tx.send(Cmd::MoveTo(x, y));
     }
 }

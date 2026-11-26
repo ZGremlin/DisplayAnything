@@ -163,6 +163,14 @@ impl Backend for Platform {
         }
     }
 
+    fn move_to(&mut self, x: f64, y: f64) {
+        let cur = self.cursor();
+        let (dx, dy) = ((x - cur.x).round() as i32, (y - cur.y).round() as i32);
+        if dx != 0 || dy != 0 {
+            self.mouse_move(dx, dy);
+        }
+    }
+
     fn mouse_move(&mut self, dx: i32, dy: i32) {
         let cur = self.cursor();
         let p = clamp_to_displays(CGPoint::new(cur.x + dx as f64, cur.y + dy as f64));

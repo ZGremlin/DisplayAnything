@@ -104,6 +104,19 @@ impl Backend for Platform {
         }
     }
 
+    fn move_to(&mut self, x: f64, y: f64) {
+        let mut p = POINT::default();
+        unsafe {
+            if GetCursorPos(&mut p).is_err() {
+                return;
+            }
+        }
+        let (dx, dy) = (x.round() as i32 - p.x, y.round() as i32 - p.y);
+        if dx != 0 || dy != 0 {
+            self.mouse_move(dx, dy);
+        }
+    }
+
     fn mouse_move(&mut self, dx: i32, dy: i32) {
         unsafe {
             let mut p = POINT::default();

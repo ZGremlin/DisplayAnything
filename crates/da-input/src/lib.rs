@@ -16,9 +16,11 @@ pub mod inject;
 pub mod keymap;
 pub mod permissions;
 pub mod switcher;
+#[cfg(windows)]
+pub mod window_keys;
 pub mod wire;
 
-pub use capture::{Controller, ControllerMsg};
+pub use capture::{Controller, ControllerMsg, GrabEvent};
 pub use inject::{Injector, InjectorOptions};
 pub use switcher::{Combo, Hotkeys, Recording, Target};
 pub use wire::{Edge, Frame, InputEvent, MouseButton};
