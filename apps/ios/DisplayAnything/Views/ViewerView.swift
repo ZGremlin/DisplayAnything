@@ -13,6 +13,7 @@ struct ViewerView: View {
     @StateObject private var session = ViewerSession()
 
     @AppStorage("controlMode") private var mode: ControlMode = .cursor
+    @AppStorage(StreamQuality.key) private var quality: StreamQuality = .auto
     @State private var keyboard = false
     @State private var panel = false
     @State private var keyBar = false
@@ -107,6 +108,7 @@ struct ViewerView: View {
             session.releaseAll()
             session.syncPointer()
         }
+        .onChange(of: quality) { _, q in session.apply(q) }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { session.releaseAll() }
         }
@@ -193,6 +195,21 @@ struct ViewerView: View {
     }
 
     private var controlPanel: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            panelContent.padding(16)
+        }
+        .frame(width: 280)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(.regularMaterial)
+        .environment(\.colorScheme, .dark)
+        .gesture(
+            DragGesture(minimumDistance: 20).onEnded { value in
+                if value.translation.width < -40 { panel = false }
+            }
+        )
+    }
+
+    private var panelContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(desktop.name)
                 .font(.headline)
@@ -212,6 +229,20 @@ struct ViewerView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Quality").font(.caption).foregroundStyle(.secondary)
+                Picker("Quality", selection: $quality) {
+                    ForEach(StreamQuality.allCases) { q in
+                        Text(q.title).tag(q)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(quality.help)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Toggle(isOn: $keyboard) {
                 Label("Keyboard", systemImage: "keyboard")
             }
@@ -221,25 +252,14 @@ struct ViewerView: View {
                 Label("Key bar", systemImage: "command")
             }
 
-            Spacer(minLength: 0)
-
             Button(role: .destructive) {
                 session.releaseAll()
                 dismiss()
             } label: {
                 Label("Disconnect", systemImage: "xmark.circle")
             }
+            .padding(.top, 8)
         }
-        .padding(16)
-        .frame(width: 280)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(.regularMaterial)
-        .environment(\.colorScheme, .dark)
-        .gesture(
-            DragGesture(minimumDistance: 20).onEnded { value in
-                if value.translation.width < -40 { panel = false }
-            }
-        )
     }
 
     private var modeHelp: String {
@@ -376,6 +396,61 @@ struct KeyBar: View {
     }
 }
 
+/// How sharp the picture is, traded against network use. On a Windows
+/// computer the host also switches the monitor to the closest resolution
+/// for the session (and puts it back afterwards).
+enum StreamQuality: String, CaseIterable, Identifiable {
+    case saver, auto, sharp, full
+
+    static let key = "streamQuality"
+    static var saved: StreamQuality {
+        StreamQuality(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .auto
+    }
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .saver: return "Saver"
+        case .auto: return "Auto"
+        case .sharp: return "Sharp"
+        case .full: return "Full"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .saver: return "720p at 4 Mbit/s. Uses the least Wi-Fi."
+        case .auto: return "Sized to this phone's screen, 15 Mbit/s."
+        case .sharp: return "Twice this phone's screen, 30 Mbit/s. Clearer text when zoomed in."
+        case .full: return "The computer's own resolution, 40 Mbit/s. Its screen keeps its usual resolution."
+        }
+    }
+
+    var bitrateKbps: UInt32 {
+        switch self {
+        case .saver: return 4_000
+        case .auto: return 15_000
+        case .sharp: return 30_000
+        case .full: return 40_000
+        }
+    }
+
+    /// Largest picture to ask for, landscape (long side first). Zero means
+    /// the computer's own size.
+    var maxSize: (width: UInt32, height: UInt32) {
+        let native = UIScreen.main.nativeBounds.size
+        let long = UInt32(max(native.width, native.height))
+        let short = UInt32(min(native.width, native.height))
+        switch self {
+        case .saver: return (1280, 720)
+        case .auto: return (long, short)
+        case .sharp: return (long * 2, short * 2)
+        case .full: return (0, 0)
+        }
+    }
+}
+
 /// Where the picture sits on the phone: the view's size, the local zoom and
 /// pan, and the size of the computer's picture.
 struct ViewLayout: Equatable {
@@ -465,10 +540,10 @@ final class ViewerSession: ObservableObject {
             Task { @MainActor in self?.screen?.requestKeyframe() }
         }
         self.sink = sink
+        let q = StreamQuality.saved
         let request = ScreenRequest(
-            display: 0, fps: 60, bitrateKbps: 15_000,
-            maxWidth: UInt32(UIScreen.main.nativeBounds.width),
-            maxHeight: UInt32(UIScreen.main.nativeBounds.height))
+            display: 0, fps: 60, bitrateKbps: q.bitrateKbps,
+            maxWidth: q.maxSize.width, maxHeight: q.maxSize.height)
         Task {
             do {
                 let opened = try await client.openScreen(
@@ -485,6 +560,12 @@ final class ViewerSession: ObservableObject {
         screen?.stop()
         screen = nil
         view?.reset()
+    }
+
+    /// Change the picture size and bit rate while the stream runs.
+    func apply(_ quality: StreamQuality) {
+        let size = quality.maxSize
+        screen?.configure(maxWidth: size.width, maxHeight: size.height, bitrateKbps: quality.bitrateKbps)
     }
 
     // MARK: Keyboard
