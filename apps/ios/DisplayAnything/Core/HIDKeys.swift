@@ -15,6 +15,12 @@ enum HIDKey {
     static let down: UInt16 = 0x51
     static let up: UInt16 = 0x52
 
+    static let keypadDivide: UInt16 = 0x54
+    static let keypadMultiply: UInt16 = 0x55
+    static let keypadMinus: UInt16 = 0x56
+    static let keypadPlus: UInt16 = 0x57
+    static let keypadEnter: UInt16 = 0x58
+
     static let control: UInt16 = 0xE0
     static let shift: UInt16 = 0xE1
     static let alt: UInt16 = 0xE2

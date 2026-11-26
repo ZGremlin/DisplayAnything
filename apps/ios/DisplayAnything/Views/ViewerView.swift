@@ -61,8 +61,10 @@ struct ViewerView: View {
 
                 KeyboardInput(
                     isActive: $keyboard,
+                    latched: session.latched,
                     onText: { text in session.type(text) },
-                    onKey: { usage in session.press(usage) }
+                    onKey: { usage in session.press(usage) },
+                    onToggleModifier: { usage in session.toggleLatch(usage) }
                 )
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
