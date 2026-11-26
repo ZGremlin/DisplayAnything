@@ -6,12 +6,21 @@ import UIKit
 final class DesktopStore: ObservableObject {
     @Published private(set) var desktops: [Desktop] = []
     @Published var startError: String?
+    /// What this phone is called on the computers it pairs with.
+    @Published private(set) var deviceName: String
+
+    private static let nameKey = "deviceName"
 
     private(set) var client: Client?
 
     init() {
+        // iOS reports a generic "iPhone" as the device name, so the person can
+        // set their own; it is kept in UserDefaults.
+        let saved = UserDefaults.standard.string(forKey: Self.nameKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = (saved?.isEmpty == false ? saved : nil) ?? UIDevice.current.name
+        deviceName = name
         do {
-            let name = UIDevice.current.name
             let identity = try PhoneIdentity.loadOrCreate(deviceName: name)
             let dir = try FileManager.default
                 .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -27,6 +36,15 @@ final class DesktopStore: ObservableObject {
 
     func refresh() {
         desktops = client?.savedDesktops() ?? []
+    }
+
+    /// Rename this phone. Computers see the new name the next time it connects.
+    func rename(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        UserDefaults.standard.set(trimmed, forKey: Self.nameKey)
+        deviceName = trimmed
+        client?.setDeviceName(name: trimmed)
     }
 
     func forget(_ desktop: Desktop) {

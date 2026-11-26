@@ -11,6 +11,7 @@
 
 use anyhow::anyhow;
 use da_core::da_input::{InputEvent, MouseButton};
+use da_core::da_input::keymap::LSHIFT;
 use da_core::da_screen::h264;
 use da_core::da_screen::wire::StreamSettings;
 use da_core::da_screen::ViewMsg;
@@ -406,12 +407,41 @@ impl Screen {
         });
     }
 
-    /// Scroll by notches (positive is up and right).
+    /// Scroll, 120 units per wheel notch (positive is up and right).
+    /// Smaller steps give smooth scrolling where the desktop supports it.
     pub fn scroll(&self, dx: i32, dy: i32) {
         self.control.send_input(InputEvent::Wheel {
-            dx: clamp16(dx.saturating_mul(120)),
-            dy: clamp16(dy.saturating_mul(120)),
+            dx: clamp16(dx),
+            dy: clamp16(dy),
         });
+    }
+
+    /// Type text as key presses on a US keyboard layout, holding `modifiers`
+    /// (HID usages, e.g. Ctrl) around each key. Characters with no key on
+    /// that layout are skipped; returns how many were sent.
+    pub fn type_text(&self, text: String, modifiers: Vec<u16>) -> u32 {
+        let mut sent = 0;
+        for ch in text.chars() {
+            let Some((usage, shift)) = usage_for_char(ch) else {
+                continue;
+            };
+            for &m in &modifiers {
+                self.key(m, true);
+            }
+            if shift {
+                self.key(LSHIFT, true);
+            }
+            self.key(usage, true);
+            self.key(usage, false);
+            if shift {
+                self.key(LSHIFT, false);
+            }
+            for &m in modifiers.iter().rev() {
+                self.key(m, false);
+            }
+            sent += 1;
+        }
+        sent
     }
 
     /// Press or release a key, by USB HID usage code (keyboard page).
@@ -427,6 +457,72 @@ impl Screen {
 
     /// End the stream. The desktop stops sending and its banner goes away.
     pub fn stop(&self) {
+        self.release_all();
         self.control.stop();
+    }
+}
+
+/// The HID usage for a character on a US layout, and whether it needs Shift.
+fn usage_for_char(ch: char) -> Option<(u16, bool)> {
+    const SHIFTED_DIGITS: &str = ")!@#$%^&*(";
+    let r = match ch {
+        'a'..='z' => (0x04 + (ch as u16 - 'a' as u16), false),
+        'A'..='Z' => (0x04 + (ch as u16 - 'A' as u16), true),
+        '1'..='9' => (0x1E + (ch as u16 - '1' as u16), false),
+        '0' => (0x27, false),
+        '\n' | '\r' => (0x28, false),
+        '\t' => (0x2B, false),
+        ' ' => (0x2C, false),
+        '-' => (0x2D, false),
+        '_' => (0x2D, true),
+        '=' => (0x2E, false),
+        '+' => (0x2E, true),
+        '[' => (0x2F, false),
+        '{' => (0x2F, true),
+        ']' => (0x30, false),
+        '}' => (0x30, true),
+        '\\' => (0x31, false),
+        '|' => (0x31, true),
+        ';' => (0x33, false),
+        ':' => (0x33, true),
+        '\'' => (0x34, false),
+        '"' => (0x34, true),
+        '`' => (0x35, false),
+        '~' => (0x35, true),
+        ',' => (0x36, false),
+        '<' => (0x36, true),
+        '.' => (0x37, false),
+        '>' => (0x37, true),
+        '/' => (0x38, false),
+        '?' => (0x38, true),
+        // iOS "smart punctuation" substitutes these; send the plain key.
+        '\u{2018}' | '\u{2019}' => (0x34, false),
+        '\u{201C}' | '\u{201D}' => (0x34, true),
+        '\u{2013}' | '\u{2014}' => (0x2D, false),
+        _ => {
+            let i = SHIFTED_DIGITS.find(ch)?;
+            let usage = if i == 0 { 0x27 } else { 0x1E + i as u16 - 1 };
+            (usage, true)
+        }
+    };
+    Some(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn us_layout_characters() {
+        assert_eq!(usage_for_char('a'), Some((0x04, false)));
+        assert_eq!(usage_for_char('Z'), Some((0x1D, true)));
+        assert_eq!(usage_for_char('1'), Some((0x1E, false)));
+        assert_eq!(usage_for_char('0'), Some((0x27, false)));
+        assert_eq!(usage_for_char('!'), Some((0x1E, true)));
+        assert_eq!(usage_for_char('('), Some((0x26, true)));
+        assert_eq!(usage_for_char(')'), Some((0x27, true)));
+        assert_eq!(usage_for_char('?'), Some((0x38, true)));
+        assert_eq!(usage_for_char('\n'), Some((0x28, false)));
+        assert_eq!(usage_for_char('\u{e9}'), None);
     }
 }
