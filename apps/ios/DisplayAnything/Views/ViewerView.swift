@@ -79,6 +79,9 @@ struct ViewerView: View {
         // never reach the computer.
         .overlay { edges }
         .toolbar(.hidden, for: .navigationBar)
+        // Also turns off the system's swipe-from-the-left-edge "back", which
+        // would otherwise fight the swipe that opens the control panel.
+        .navigationBarBackButtonHidden(true)
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .task {
@@ -574,9 +577,14 @@ final class ViewerSession: ObservableObject {
     /// typed character, then let go.
     @Published private(set) var latched: [UInt16] = []
 
+    /// A modifier on the key row or key bar. The first tap latches it for
+    /// the next key or click (Win, then Up sends Win+Up). Tapping it again
+    /// while it is latched presses it on its own, with any other latched
+    /// modifiers held: Win twice opens the Start menu.
     func toggleLatch(_ usage: UInt16) {
         if let i = latched.firstIndex(of: usage) {
             latched.remove(at: i)
+            press(usage)
         } else {
             latched.append(usage)
         }

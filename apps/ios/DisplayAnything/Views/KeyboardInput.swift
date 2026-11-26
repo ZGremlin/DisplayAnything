@@ -56,15 +56,32 @@ final class KeyboardInputView: UIView, UIKeyInput {
         onKey?(HIDKey.backspace)
     }
 
+    /// True while the Keyboard switch is on. SwiftUI takes first responder
+    /// away now and then (closing the side panel, tapping its controls);
+    /// while this is set the keyboard comes straight back.
+    var wantsKeyboard = false
+    private var hiding = false
+
     @discardableResult
     override func resignFirstResponder() -> Bool {
         let done = super.resignFirstResponder()
-        if done { onDismiss?() }
+        guard done else { return done }
+        if hiding {
+            hiding = false
+            onDismiss?()
+        } else if wantsKeyboard {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.wantsKeyboard, self.window != nil, !self.isFirstResponder else { return }
+                self.becomeFirstResponder()
+            }
+        }
         return done
     }
 
     /// Put the keyboard away from its own row.
     @objc private func hide() {
+        hiding = true
+        wantsKeyboard = false
         resignFirstResponder()
     }
 
@@ -95,8 +112,10 @@ final class KeyboardInputView: UIView, UIKeyInput {
         b.accessibilityLabel = title
         b.configurationUpdateHandler = { b in
             var c = b.configuration
-            c?.baseBackgroundColor = b.isSelected ? .tintColor : nil
-            c?.baseForegroundColor = b.isSelected ? .white : nil
+            // Explicit colours: the keyboard row has no keyboard behind it when a
+            // hardware keyboard is attached, and the defaults read as disabled.
+            c?.baseBackgroundColor = b.isSelected ? .tintColor : .secondarySystemFill
+            c?.baseForegroundColor = b.isSelected ? .white : .label
             b.configuration = c
         }
         return b
@@ -254,6 +273,7 @@ struct KeyboardInput: UIViewRepresentable {
             if binding.wrappedValue { binding.wrappedValue = false }
         }
         let wanted = isActive
+        view.wantsKeyboard = wanted
         DispatchQueue.main.async {
             if wanted, !view.isFirstResponder, view.window != nil {
                 view.becomeFirstResponder()
