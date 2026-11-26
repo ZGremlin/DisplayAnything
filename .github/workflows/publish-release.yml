@@ -19,11 +19,13 @@ jobs:
       RUN_ID: "45825650760"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Download CI artifacts from main
         run: |
           mkdir -p dl
           gh run download "$RUN_ID" -D dl
-          git show "$SHA:scripts/DisplayAnythingInstall.sh" > dl/DisplayAnythingInstall.sh || git fetch origin "$SHA" && git show "$SHA:scripts/DisplayAnythingInstall.sh" > dl/DisplayAnythingInstall.sh
+          git show "$SHA:scripts/DisplayAnythingInstall.sh" > dl/DisplayAnythingInstall.sh
           find dl -type f -exec ls -l {} \;
       - name: Create release
         run: |
