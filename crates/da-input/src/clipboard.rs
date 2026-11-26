@@ -373,6 +373,12 @@ fn set_file_paths(paths: &[PathBuf]) -> Result<()> {
             None::<&windows::Win32::System::Com::IDataObject>,
         );
     }
+    // Confirm the clipboard is empty before writing, so the new file list
+    // cannot land on top of an old one.
+    match clipboard_win::raw::count_formats() {
+        Some(0) => {}
+        other => tracing::info!("clipboard not empty before the write: {other:?} formats"),
+    }
     let result = {
         let _clip = clipboard_win::Clipboard::new_attempts(10).map_err(|e| anyhow!("{e}"))?;
         let written = clipboard_win::formats::FileList
