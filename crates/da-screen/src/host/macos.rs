@@ -603,9 +603,8 @@ impl DisplayAwake {
         let mut id = 0u32;
         // SAFETY: `name` is a valid CFString for the call, and `id` is
         // written by IOKit on success.
-        let r = unsafe {
-            IOPMAssertionDeclareUserActivity(&*name, IOPM_USER_ACTIVE_LOCAL, &mut id)
-        };
+        let r =
+            unsafe { IOPMAssertionDeclareUserActivity(&*name, IOPM_USER_ACTIVE_LOCAL, &mut id) };
         if r != 0 {
             tracing::warn!(code = r, "could not wake the display");
             return None;
