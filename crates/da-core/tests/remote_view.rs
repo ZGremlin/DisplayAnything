@@ -92,6 +92,7 @@ fn fake_starter(requests: Arc<AtomicU32>, seen: Arc<Mutex<Option<u32>>>) -> da_c
             codec: Codec::H264,
             displays: 2,
             display: opts.display,
+            audio: false,
         }));
         sink(StreamEvent::Frame(EncodedFrame {
             keyframe: true,
@@ -341,4 +342,108 @@ async fn viewer_can_change_size_and_quality() {
     .await
     .unwrap();
     assert_eq!((info.width, info.height), (1920, 1080));
+}
+
+/// A fake sound source: sends its format and one chunk when started, and
+/// counts how many are running.
+fn fake_audio(running: Arc<AtomicU32>, starts: Arc<AtomicU32>) -> da_core::AudioStarter {
+    use da_core::da_screen::audio::AudioEvent;
+    use da_core::da_screen::wire::{AudioChunk, AudioFormat};
+    struct Running(Arc<AtomicU32>);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    Arc::new(move |mut sink| {
+        let n = starts.fetch_add(1, Ordering::SeqCst) + 1;
+        running.fetch_add(1, Ordering::SeqCst);
+        sink(AudioEvent::Format(AudioFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        }));
+        sink(AudioEvent::Chunk(AudioChunk {
+            pts_us: 0,
+            data: vec![n as u8; 8],
+        }));
+        Ok(Box::new(Running(running.clone())) as Box<dyn Send>)
+    })
+}
+
+/// The next sound message, skipping video.
+async fn next_audio(view: &mut da_core::RemoteView) -> ViewMsg {
+    loop {
+        if let m @ (ViewMsg::AudioInfo(_) | ViewMsg::Audio(_)) = next(view).await {
+            return m;
+        }
+    }
+}
+
+#[tokio::test]
+async fn sound_comes_only_when_asked_and_can_be_switched() {
+    let (host, addr, viewer) = paired().await;
+    allow_remote(&host, &viewer);
+    host.set_screen_starter(Some(fake_starter(
+        Arc::new(AtomicU32::new(0)),
+        Arc::new(Mutex::new(None)),
+    )));
+    let running = Arc::new(AtomicU32::new(0));
+    let starts = Arc::new(AtomicU32::new(0));
+    host.set_audio_starter(Some(fake_audio(running.clone(), starts.clone())));
+
+    // Sound off: none is recorded, but the host says it could.
+    let mut view = viewer
+        .open_remote(addr, StartRequest::default())
+        .await
+        .unwrap();
+    match next(&mut view).await {
+        ViewMsg::Info(i) => assert!(i.audio),
+        other => panic!("expected info, got {other:?}"),
+    }
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+
+    // Switched on mid-session: format, then sound.
+    view.control().set_audio(true);
+    match next_audio(&mut view).await {
+        ViewMsg::AudioInfo(f) => assert_eq!((f.sample_rate, f.channels), (48_000, 2)),
+        other => panic!("expected the sound format, got {other:?}"),
+    }
+    match next_audio(&mut view).await {
+        ViewMsg::Audio(a) => assert_eq!(a.data, vec![1; 8]),
+        other => panic!("expected sound, got {other:?}"),
+    }
+    assert_eq!(running.load(Ordering::SeqCst), 1);
+
+    // Off again: the host stops recording.
+    view.control().set_audio(false);
+    timeout(Duration::from_secs(5), async {
+        while running.load(Ordering::SeqCst) != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("sound capture did not stop");
+    drop(view);
+
+    // Asked for at the start: sound right away, stopped when the view ends.
+    let mut view = viewer
+        .open_remote(
+            addr,
+            StartRequest {
+                audio: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(next_audio(&mut view).await, ViewMsg::AudioInfo(_)));
+    assert!(matches!(next_audio(&mut view).await, ViewMsg::Audio(_)));
+    drop(view);
+    timeout(Duration::from_secs(5), async {
+        while running.load(Ordering::SeqCst) != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("sound capture did not stop with the session");
 }

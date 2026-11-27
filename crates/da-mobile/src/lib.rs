@@ -12,8 +12,9 @@
 use anyhow::anyhow;
 use da_core::da_input::keymap::LSHIFT;
 use da_core::da_input::{InputEvent, MouseButton};
+use da_core::da_screen::audio::AudioPlayer;
 use da_core::da_screen::h264;
-use da_core::da_screen::wire::StreamSettings;
+use da_core::da_screen::wire::{AudioFormat, StreamSettings};
 use da_core::da_screen::ViewMsg;
 use da_core::identity::Fingerprint;
 use da_core::protocol::DeviceKind;
@@ -22,6 +23,7 @@ use da_core::{
 };
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -132,6 +134,9 @@ pub struct ScreenRequest {
     /// the desktop doesn't send more than the phone can show.
     pub max_width: u32,
     pub max_height: u32,
+    /// Play the desktop's sound on this phone. Can be changed later with
+    /// [`Screen::set_audio`].
+    pub audio: bool,
 }
 
 /// Receives the stream. Called on a background thread: hop to the main
@@ -320,18 +325,54 @@ impl Client {
             bitrate_kbps: request.bitrate_kbps,
             max_width: request.max_width,
             max_height: request.max_height,
+            audio: request.audio,
         };
         let mut view = self.node.open_remote(addr, start).await.map_err(classify)?;
         let control = view.control();
+        let audio_on = Arc::new(AtomicBool::new(request.audio));
+        let host_audio = Arc::new(AtomicBool::new(false));
+        let (audio_on2, host_audio2) = (audio_on.clone(), host_audio.clone());
 
         tokio::spawn(async move {
             // Parameter sets we last handed to Swift, so they are sent once
             // and again only when the desktop changes them.
             let mut format: Option<(Vec<u8>, Vec<u8>)> = None;
+            // The desktop's sound: its format, and the player while it's on.
+            let mut sound: Option<AudioFormat> = None;
+            let mut player: Option<AudioPlayer> = None;
+            let mut player_failed = false;
             while let Some(msg) = view.next().await {
                 match msg {
                     ViewMsg::Info(info) => {
+                        host_audio2.store(info.audio, Ordering::Relaxed);
                         sink.on_info(info.width, info.height, info.displays, info.display)
+                    }
+                    ViewMsg::AudioInfo(f) => {
+                        if sound != Some(f) {
+                            sound = Some(f);
+                            player = None;
+                            player_failed = false;
+                        }
+                    }
+                    ViewMsg::Audio(chunk) => {
+                        if !audio_on2.load(Ordering::Relaxed) {
+                            player = None;
+                            continue;
+                        }
+                        if player.is_none() && !player_failed {
+                            if let Some(f) = sound {
+                                match AudioPlayer::new(f) {
+                                    Ok(p) => player = Some(p),
+                                    Err(e) => {
+                                        player_failed = true;
+                                        log_warning(&format!("can't play the sound: {e:#}"));
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(p) = &player {
+                            p.push(&chunk.data);
+                        }
                     }
                     ViewMsg::Video(frame) => {
                         if frame.keyframe {
@@ -357,8 +398,16 @@ impl Client {
             sink.on_closed();
         });
 
-        Ok(Arc::new(Screen { control }))
+        Ok(Arc::new(Screen {
+            control,
+            audio_on,
+            host_audio,
+        }))
     }
+}
+
+fn log_warning(message: &str) {
+    eprintln!("DisplayAnything: {message}");
 }
 
 /// A mouse button the phone can press on the desktop.
@@ -383,6 +432,10 @@ impl From<PointerButton> for MouseButton {
 #[derive(uniffi::Object)]
 pub struct Screen {
     control: RemoteControl,
+    /// Play the desktop's sound (shared with the stream task).
+    audio_on: Arc<AtomicBool>,
+    /// The desktop can send sound and switch it on and off.
+    host_audio: Arc<AtomicBool>,
 }
 
 #[uniffi::export]
@@ -391,6 +444,16 @@ impl Screen {
     /// was lost or the app came back from the background.
     pub fn request_keyframe(&self) {
         self.control.request_keyframe();
+    }
+
+    /// Turn the desktop's sound on or off on this phone. The desktop stops
+    /// recording while it's off (desktops from before sound just stay
+    /// silent).
+    pub fn set_audio(&self, on: bool) {
+        self.audio_on.store(on, Ordering::Relaxed);
+        if self.host_audio.load(Ordering::Relaxed) {
+            self.control.set_audio(on);
+        }
     }
 
     /// Show another of the desktop's monitors.

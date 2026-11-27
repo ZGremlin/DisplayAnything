@@ -41,6 +41,10 @@ targets:
       - target: ClientCore
       - framework: ../../target/ios/DAMobile.xcframework
         embed: false
+      # The Rust core plays the computer's sound through Core Audio (cpal).
+      - sdk: AudioToolbox.framework
+      - sdk: AVFAudio.framework
+      - sdk: CoreAudio.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.JC.DisplayAnything

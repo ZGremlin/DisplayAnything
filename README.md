@@ -35,6 +35,7 @@ Open another computer's screen in a window on this one, and use it with your own
 - **Monitor picker:** if the other computer has more than one monitor, numbered buttons (1, 2, …) pick which one you see, and switch an open window to it.
 - **Picture size:** full resolution, match the screen you're watching on, or a fixed size from 4K (3840 x 2160) down to 1280 x 720. The remote picture is scaled to fit and keeps its shape. When you pick a size that isn't the other computer's own, it switches its display to that resolution for the session and puts it back afterwards.
 - **Quality:** Highest (the default, about 80 Mbit/s), High, Medium or Low (about 8 Mbit/s) for slower networks.
+- **Sound:** what the other computer plays comes through on yours (on by default, about 1.5 Mbit/s extra). Turn it off with **Play the other computer's sound** under **Control screen picture**, from the window's **Sound** menu, or with **Computer's sound** in the iPhone app's control panel. While it's off, the other computer doesn't record its sound at all.
 - Both settings apply right away, including to windows that are already open, from the main window or from the viewer window's menu.
 - Keys go to the other computer while its window is in front. **Ctrl+Alt+Esc** (Ctrl+Option+Esc on a Mac) ends control.
 - The computer being controlled must allow it first: under **Saved devices**, tick "May control this desktop" for the computer that will view it (off by default). Its tray icon turns green while it's being controlled.
@@ -104,7 +105,7 @@ You see the other computer's screen in a window and work in it as if you were si
 2. On the computer you're sitting at, click **Control screen** next to it. A window opens with its screen. If it has more than one monitor, the numbered buttons pick one.
 3. While the window is in front, your keyboard and mouse work on the other computer. Click another window, or press Ctrl+Alt+Esc, to have them back. Close the window to end the session.
 
-How it works: the controlled computer captures its screen (Windows Graphics Capture on Windows, ScreenCaptureKit on a Mac) and compresses it with the graphics card's hardware H.264 encoder. Your computer decodes it in hardware and draws it in a native window (Media Foundation and Direct3D 11 on Windows, AVFoundation on a Mac). Mouse positions are sent as points on the remote screen, so the pointer lands exactly where you click; keys are sent as they are. Picture size and quality are chosen under **Control screen picture** or from the window's menu. The controlled computer's tray icon turns green while it's being controlled.
+How it works: the controlled computer captures its screen (Windows Graphics Capture on Windows, ScreenCaptureKit on a Mac) and compresses it with the graphics card's hardware H.264 encoder. Your computer decodes it in hardware and draws it in a native window (Media Foundation and Direct3D 11 on Windows, AVFoundation on a Mac). Mouse positions are sent as points on the remote screen, so the pointer lands exactly where you click; keys are sent as they are. Picture size and quality are chosen under **Control screen picture** or from the window's menu. The controlled computer's tray icon turns green while it's being controlled. Sound is recorded with WASAPI loopback on Windows and ScreenCaptureKit on a Mac (the same Screen Recording permission as the picture), and sent uncompressed alongside the picture.
 
 ### Shared keyboard and mouse
 
@@ -170,12 +171,14 @@ No driver or paid Apple account is needed.
    bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip
    ```
 
-   The script quits any running copy, installs the app into Applications, removes the "downloaded from the internet" flag so macOS will open it, re-signs it locally, and clears any old permission grants. Then it opens DisplayAnything and the three System Settings pages below. (With no argument, it uses the newest `DisplayAnything-macOS` download in `~/Downloads`. The script is also in this repo at `scripts/DisplayAnythingInstall.sh`.)
+   The script quits any running copy, installs the app into Applications, removes the "downloaded from the internet" flag so macOS will open it, and re-signs it locally. Then it opens DisplayAnything, plus the three System Settings pages below if the permissions need switching on. (With no argument, it uses the newest `DisplayAnything-macOS` download in `~/Downloads`. The script is also in this repo at `scripts/DisplayAnythingInstall.sh`.)
 3. Switch DisplayAnything **on** in each of the three permission pages (see the next section).
 4. **Quit DisplayAnything from its menu-bar icon and open it again**, so macOS applies the new permissions.
 5. Optional: tick **Start at login** at the top of the window.
 
-Run the script again after installing each new build. macOS treats every new build as a new app, so the old permission grants silently stop working until you switch them on again.
+Run the script again after installing each new build.
+
+**Keeping the permissions between builds.** macOS ties the three permissions to the app's signature. If the Mac has an Apple code-signing certificate in its keychain ("Developer ID Application", or the "Apple Development" one Xcode creates for a paid or free Apple developer account), the script signs every build with it, so macOS sees the same app each time and the permissions carry over. You switch them on once, after the first install signed this way. macOS may ask once to let `codesign` use the key: enter your Mac password and click **Always Allow**. Without a certificate, the script signs ad hoc, each build counts as a new app, and it clears the old grants (they would look switched on but do nothing), so you switch them on again. Run the script with `--reset-permissions` to clear them anyway, or set `DA_SIGN_IDENTITY` to choose a certificate.
 
 ### Mac permissions
 

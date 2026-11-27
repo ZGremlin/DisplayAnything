@@ -5,6 +5,7 @@
 //! - [`host`]: captures this computer's screen and hardware-encodes it
 //!   (Windows: Windows.Graphics.Capture + Media Foundation; macOS:
 //!   ScreenCaptureKit + VideoToolbox).
+//! - [`audio`]: the host's sound (system audio capture and playback).
 //! - [`viewer`]: decodes the stream in hardware and shows it in a native
 //!   window (Windows: Media Foundation + Direct3D 11 flip swap chain;
 //!   macOS: `AVSampleBufferDisplayLayer`).
@@ -12,6 +13,7 @@
 //! Everything here is LAN-only plumbing; authentication, permissions and
 //! the connection itself live in da-core.
 
+pub mod audio;
 pub mod h264;
 pub mod host;
 pub mod viewer;

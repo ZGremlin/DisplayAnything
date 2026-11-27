@@ -319,6 +319,7 @@ fn run(
         codec: Codec::H264,
         displays,
         display,
+        audio: false,
     }));
 
     let started = Instant::now();
@@ -349,6 +350,7 @@ fn run(
                     codec: Codec::H264,
                     displays,
                     display,
+                    audio: false,
                 }));
                 keyframe.store(true, Ordering::Relaxed);
                 continue;

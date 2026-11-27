@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 
@@ -22,6 +23,7 @@ struct ViewerView: View {
     @AppStorage(ViewerSetting.showStats) private var showStats = false
     @AppStorage(ViewerSetting.keepAwake) private var keepAwake = true
     @State private var hostKeys: HostKeys = .windows
+    @AppStorage(ViewerSession.soundKey) private var sound = true
     @State private var keyboard = false
     @State private var composing = false
     @State private var composeText = ""
@@ -157,6 +159,7 @@ struct ViewerView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardInset = 0
         }
+        .onChange(of: sound) { _, on in session.setSound(on) }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { session.releaseAll() }
         }
@@ -359,6 +362,10 @@ struct ViewerView: View {
                 .padding(.top, 8)
             } label: {
                 Label("Settings", systemImage: "gearshape")
+            }
+
+            Toggle(isOn: $sound) {
+                Label("Computer's sound", systemImage: sound ? "speaker.wave.2" : "speaker.slash")
             }
 
             Button(role: .destructive) {
@@ -757,9 +764,12 @@ final class ViewerSession: ObservableObject {
         }
         self.sink = sink
         let q = StreamQuality.saved
+        let sound = Self.soundOn
+        if sound { Self.prepareAudioSession() }
         let request = ScreenRequest(
             display: 0, fps: 60, bitrateKbps: q.bitrateKbps,
-            maxWidth: q.maxSize.width, maxHeight: q.maxSize.height)
+            maxWidth: q.maxSize.width, maxHeight: q.maxSize.height,
+            audio: sound)
         Task {
             defer { self.waking = false }
             if wakeFirst {
@@ -807,6 +817,30 @@ final class ViewerSession: ObservableObject {
     /// Show another of the computer's monitors.
     func selectDisplay(_ index: Int) {
         screen?.selectDisplay(display: UInt32(index))
+    }
+
+    // MARK: Sound
+
+    static let soundKey = "playSound"
+
+    /// The "Computer's sound" setting (on unless turned off).
+    static var soundOn: Bool {
+        UserDefaults.standard.object(forKey: soundKey) as? Bool ?? true
+    }
+
+    /// Turn the computer's sound on or off while the stream runs. The
+    /// computer stops recording while it's off.
+    func setSound(_ on: Bool) {
+        if on { Self.prepareAudioSession() }
+        screen?.setAudio(on: on)
+    }
+
+    /// Play through the speaker even with the silent switch on, mixed with
+    /// any other app's sound.
+    static func prepareAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? session.setActive(true)
     }
 
     /// Change the picture size and bit rate while the stream runs.

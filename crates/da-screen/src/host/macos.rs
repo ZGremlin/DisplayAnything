@@ -87,11 +87,13 @@ pub(super) struct Host {
     /// Puts the display's resolution back when the session ends (dropped
     /// after capture has stopped).
     _mode: Option<ModeGuard>,
+    /// Keeps the display awake while it is being viewed (dropped last).
+    _awake: Option<DisplayAwake>,
 }
 
 /// Lets Objective-C objects that are safe to message from any thread
 /// (SCStream and our own output object) live in a Send struct.
-struct SendBox<T>(T);
+pub(crate) struct SendBox<T>(pub(crate) T);
 unsafe impl<T> Send for SendBox<T> {}
 unsafe impl<T> Sync for SendBox<T> {}
 
@@ -104,7 +106,12 @@ impl Host {
                  (System Settings > Privacy & Security > Screen Recording)"
             );
         }
-        let ids = display_ids();
+        // A Mac whose display has gone to sleep (or that was just woken
+        // over the network, which leaves the display dark) lists no
+        // screens to capture. Turn the display on first, as a key press
+        // would, and give it a moment to come back.
+        let awake = DisplayAwake::declare();
+        let ids = wait_for_displays();
         let (display_index, wanted) = match ids.get(opts.display as usize) {
             Some(id) => (opts.display, *id),
             None => (0, CGMainDisplayID()),
@@ -115,7 +122,7 @@ impl Host {
         if mode.is_some() {
             std::thread::sleep(Duration::from_millis(1500));
         }
-        let content = shareable_content()?;
+        let content = shareable_content_with_display()?;
         let displays = unsafe { content.0.displays() };
         let display: Retained<SCDisplay> = displays
             .iter()
@@ -154,6 +161,7 @@ impl Host {
             codec: Codec::H264,
             displays: display_count,
             display: display_index,
+            audio: false,
         }));
 
         let stream = unsafe {
@@ -234,6 +242,7 @@ impl Host {
             _queue: queue,
             timer: Some(timer),
             _mode: mode,
+            _awake: awake,
         })
     }
 
@@ -519,11 +528,11 @@ impl StreamOutput {
     }
 }
 
-fn describe(e: &NSError) -> String {
+pub(crate) fn describe(e: &NSError) -> String {
     e.localizedDescription().to_string()
 }
 
-fn shareable_content() -> Result<SendBox<Retained<SCShareableContent>>> {
+pub(crate) fn shareable_content() -> Result<SendBox<Retained<SCShareableContent>>> {
     let (tx, rx) = channel::<std::result::Result<SendBox<Retained<SCShareableContent>>, String>>();
     let block = RcBlock::new(move |content: *mut SCShareableContent, err: *mut NSError| {
         let r = match unsafe { Retained::retain(content) } {
@@ -538,6 +547,78 @@ fn shareable_content() -> Result<SendBox<Retained<SCShareableContent>>> {
     rx.recv_timeout(Duration::from_secs(10))
         .context("macOS did not list the screens in time")?
         .map_err(|e| anyhow!("could not list the screens: {e}"))
+}
+
+/// How long a display that is waking up gets to appear.
+const DISPLAY_WAKE_WAIT: Duration = Duration::from_secs(6);
+
+/// Active displays, waiting briefly for a sleeping display to come back.
+fn wait_for_displays() -> Vec<CGDirectDisplayID> {
+    let until = Instant::now() + DISPLAY_WAKE_WAIT;
+    loop {
+        let ids = display_ids();
+        if !ids.is_empty() || Instant::now() >= until {
+            return ids;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// The shareable screens, retried while a waking display isn't listed yet.
+fn shareable_content_with_display() -> Result<SendBox<Retained<SCShareableContent>>> {
+    let until = Instant::now() + DISPLAY_WAKE_WAIT;
+    loop {
+        let content = shareable_content()?;
+        let any = unsafe { content.0.displays() }.count() > 0;
+        if any || Instant::now() >= until {
+            if !any {
+                tracing::warn!("no display came back after waking it");
+            }
+            return Ok(content);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+#[link(name = "IOKit", kind = "framework")]
+extern "C" {
+    // IOKit/pwr_mgt/IOPMLib.h
+    fn IOPMAssertionDeclareUserActivity(
+        name: *const CFString,
+        user_type: u32,
+        assertion_id: *mut u32,
+    ) -> i32;
+    fn IOPMAssertionRelease(assertion_id: u32) -> i32;
+}
+
+/// kIOPMUserActiveLocal: activity as if from this Mac's own keyboard.
+const IOPM_USER_ACTIVE_LOCAL: u32 = 0;
+
+/// Turns the display on (like touching the keyboard) and keeps it from
+/// idling off while the screen is being viewed. Released when dropped.
+struct DisplayAwake(u32);
+
+impl DisplayAwake {
+    fn declare() -> Option<Self> {
+        let name = CFString::from_static_str("DisplayAnything remote screen control");
+        let mut id = 0u32;
+        // SAFETY: `name` is a valid CFString for the call, and `id` is
+        // written by IOKit on success.
+        let r =
+            unsafe { IOPMAssertionDeclareUserActivity(&*name, IOPM_USER_ACTIVE_LOCAL, &mut id) };
+        if r != 0 {
+            tracing::warn!(code = r, "could not wake the display");
+            return None;
+        }
+        Some(DisplayAwake(id))
+    }
+}
+
+impl Drop for DisplayAwake {
+    fn drop(&mut self) {
+        // SAFETY: releases the assertion created in declare().
+        unsafe { IOPMAssertionRelease(self.0) };
+    }
 }
 
 /// Active displays, main display first.
