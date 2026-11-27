@@ -170,12 +170,14 @@ No driver or paid Apple account is needed.
    bash ~/Downloads/DisplayAnythingInstall.sh ~/Downloads/DisplayAnything-macOS.zip
    ```
 
-   The script quits any running copy, installs the app into Applications, removes the "downloaded from the internet" flag so macOS will open it, re-signs it locally, and clears any old permission grants. Then it opens DisplayAnything and the three System Settings pages below. (With no argument, it uses the newest `DisplayAnything-macOS` download in `~/Downloads`. The script is also in this repo at `scripts/DisplayAnythingInstall.sh`.)
+   The script quits any running copy, installs the app into Applications, removes the "downloaded from the internet" flag so macOS will open it, and re-signs it locally. Then it opens DisplayAnything, plus the three System Settings pages below if the permissions need switching on. (With no argument, it uses the newest `DisplayAnything-macOS` download in `~/Downloads`. The script is also in this repo at `scripts/DisplayAnythingInstall.sh`.)
 3. Switch DisplayAnything **on** in each of the three permission pages (see the next section).
 4. **Quit DisplayAnything from its menu-bar icon and open it again**, so macOS applies the new permissions.
 5. Optional: tick **Start at login** at the top of the window.
 
-Run the script again after installing each new build. macOS treats every new build as a new app, so the old permission grants silently stop working until you switch them on again.
+Run the script again after installing each new build.
+
+**Keeping the permissions between builds.** macOS ties the three permissions to the app's signature. If the Mac has an Apple code-signing certificate in its keychain ("Developer ID Application", or the "Apple Development" one Xcode creates for a paid or free Apple developer account), the script signs every build with it, so macOS sees the same app each time and the permissions carry over. You switch them on once, after the first install signed this way. macOS may ask once to let `codesign` use the key: enter your Mac password and click **Always Allow**. Without a certificate, the script signs ad hoc, each build counts as a new app, and it clears the old grants (they would look switched on but do nothing), so you switch them on again. Run the script with `--reset-permissions` to clear them anyway, or set `DA_SIGN_IDENTITY` to choose a certificate.
 
 ### Mac permissions
 
