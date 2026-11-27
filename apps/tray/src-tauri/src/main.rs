@@ -181,6 +181,8 @@ struct PeerView {
     screens: u32,
     /// The monitor its open viewer window shows, if one is open.
     screen_shown: Option<u32>,
+    /// It told us its hardware address, so it can be woken from sleep.
+    can_wake: bool,
 }
 
 /// Events forwarded to the window.
@@ -278,6 +280,7 @@ fn peers(state: State<'_, AppState>, viewers: State<'_, remote::Viewers>) -> Vec
                 online: online.contains(&p.fingerprint),
                 permissions: p.permissions,
                 custom_name: p.custom_name,
+                can_wake: p.wake_mac.is_some(),
             }
         })
         .collect();
@@ -391,6 +394,18 @@ fn unpair(state: State<'_, AppState>, fingerprint: String) -> Result<(), String>
         .map_err(|e| e.to_string())?;
     state.online.lock().unwrap().remove(&fingerprint);
     Ok(())
+}
+
+/// Send a Wake-on-LAN packet to a sleeping paired computer. It reconnects
+/// on its own once it's awake.
+#[tauri::command]
+fn wake_peer(state: State<'_, AppState>, fingerprint: String) -> Result<(), String> {
+    let fp = Fingerprint::from_hex(&fingerprint).map_err(|e| e.to_string())?;
+    state
+        .node
+        .wake_peer(&fp)
+        .map(|_| ())
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -1253,6 +1268,7 @@ fn main() {
             submit_code,
             cancel_pair,
             unpair,
+            wake_peer,
             set_auto_connect,
             set_permissions,
             get_autostart,

@@ -50,6 +50,10 @@ pub struct TrustedPeer {
     /// read as desktops.
     #[serde(default)]
     pub device_kind: DeviceKind,
+    /// The peer's hardware (MAC) address, as it last told us, for waking
+    /// it with Wake-on-LAN. Only desktops that support waking send one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_mac: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -199,6 +203,23 @@ impl TrustStore {
         Ok(())
     }
 
+    /// Remember the hardware address a peer gave us for waking it. A peer
+    /// that sends none (an older build) keeps the one we already have.
+    pub fn note_wake_mac(&mut self, fp: &Fingerprint, mac: Option<&str>) -> Result<()> {
+        let Some(mac) = mac.and_then(|m| crate::wol::MacAddr::parse(m).ok()) else {
+            return Ok(());
+        };
+        let mac = mac.to_string();
+        let hex = fp.to_hex();
+        if let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == hex) {
+            if p.wake_mac.as_deref() != Some(mac.as_str()) {
+                p.wake_mac = Some(mac);
+                self.save()?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn set_auto_connect(&mut self, fp: &Fingerprint, on: bool) -> Result<bool> {
         let hex = fp.to_hex();
         let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == hex) else {
@@ -243,6 +264,7 @@ mod tests {
                 auto_connect: true,
                 custom_name: false,
                 device_kind: DeviceKind::Desktop,
+                wake_mac: None,
             })
             .unwrap();
         }
@@ -255,6 +277,15 @@ mod tests {
         assert_eq!(
             (p.last_addr.as_deref(), p.port),
             (Some("192.168.1.9"), Some(47800))
+        );
+        t.note_wake_mac(&fp, Some("A4:83:E7:0B:1C:2D")).unwrap();
+        t.note_wake_mac(&fp, None).unwrap();
+        t.note_wake_mac(&fp, Some("not a mac")).unwrap();
+        let reloaded = TrustStore::load(dir.path()).unwrap();
+        assert_eq!(
+            reloaded.get(&fp).unwrap().wake_mac.as_deref(),
+            Some("a4:83:e7:0b:1c:2d"),
+            "kept, and normalised"
         );
         assert_eq!(t.remove("MAC").unwrap(), 1);
         assert!(TrustStore::load(dir.path()).unwrap().get(&fp).is_none());
@@ -271,4 +302,5 @@ fn old_files_without_new_fields_still_load() {
     .unwrap();
     let t = TrustStore::load(dir.path()).unwrap();
     assert!(t.peers()[0].auto_connect);
+    assert_eq!(t.peers()[0].wake_mac, None);
 }

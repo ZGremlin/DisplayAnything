@@ -154,11 +154,13 @@ impl Node {
             )
             .await;
         }
+        let wake_mac = self.own_wake_mac(s.get_ref().0.local_addr().ok());
         write_msg(
             &mut s,
             &Message::Welcome {
                 name: self.name(),
                 granted: peer.permissions,
+                wake_mac,
             },
         )
         .await?;
@@ -326,7 +328,13 @@ impl Node {
             .await
             .context("no answer from the other device")??
         {
-            Message::Welcome { .. } => {}
+            Message::Welcome { wake_mac, .. } => {
+                // Remember how to wake this desktop; a phone only ever
+                // connects this way, so this is where it learns it.
+                if let Err(e) = self.trust().note_wake_mac(&fp, wake_mac.as_deref()) {
+                    tracing::warn!("could not save the wake address: {e:#}");
+                }
+            }
             Message::Error { message, .. } => bail!("{message}"),
             other => bail!("unexpected reply {other:?}"),
         }

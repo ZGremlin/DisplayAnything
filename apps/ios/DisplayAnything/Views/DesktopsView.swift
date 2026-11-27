@@ -4,11 +4,15 @@ struct DesktopsView: View {
     @EnvironmentObject private var store: DesktopStore
     @State private var adding = false
     @State private var settings = false
+    @State private var wakeNotice: String?
 
     var body: some View {
         List {
             if let error = store.startError {
                 Text(error).foregroundStyle(.red)
+            }
+            if let wakeNotice {
+                Text(wakeNotice).font(.callout).foregroundStyle(.secondary)
             }
             if store.desktops.isEmpty {
                 ContentUnavailableView(
@@ -26,6 +30,25 @@ struct DesktopsView: View {
                         Text(desktop.address.map { "\($0):\(String(desktop.port))" } ?? "No address saved")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                }
+                .swipeActions(edge: .leading) {
+                    if desktop.canWake {
+                        Button {
+                            wakeNotice = store.wake(desktop)
+                        } label: {
+                            Label("Wake", systemImage: "power")
+                        }
+                        .tint(.orange)
+                    }
+                }
+                .contextMenu {
+                    if desktop.canWake {
+                        Button {
+                            wakeNotice = store.wake(desktop)
+                        } label: {
+                            Label("Wake from sleep", systemImage: "power")
+                        }
                     }
                 }
             }

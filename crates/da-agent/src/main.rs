@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use da_core::da_input::{Hotkeys, InjectorOptions};
 use da_core::{
-    discovery, AutoConnector, Config, Event, Fingerprint, Identity, InputShare, Node,
+    discovery, AutoConnector, Config, Event, Fingerprint, Identity, InputShare, MacAddr, Node,
     PlatformInputTarget, TrustStore, DEFAULT_PORT,
 };
 use std::io::Write;
@@ -69,6 +69,17 @@ enum Cmd {
     Peers,
     /// Forget a paired device, by name or fingerprint prefix.
     Unpair { who: String },
+    /// Wake a sleeping paired computer with a Wake-on-LAN packet, by name
+    /// or fingerprint prefix. It must have told this device its hardware
+    /// address (it does when you pair or connect while it's awake), or pass
+    /// one with --mac.
+    Wake {
+        who: Option<String>,
+        /// Hardware address to wake instead of a paired device's, e.g.
+        /// a4:83:e7:0b:1c:2d.
+        #[arg(long)]
+        mac: Option<String>,
+    },
     /// Look for DisplayAnything devices on the LAN.
     Discover {
         #[arg(long, default_value_t = 3)]
@@ -166,10 +177,11 @@ async fn main() -> Result<()> {
                     .unwrap_or_else(|| "?".into());
                 let perms = &p.permissions;
                 println!(
-                    "{:<24} {}  last seen {:<16} auto-connect:{} remote-control:{} display:{} input:{}",
+                    "{:<24} {}  last seen {:<16} wake:{:<17} auto-connect:{} remote-control:{} display:{} input:{}",
                     p.name,
                     fp,
                     p.last_addr.as_deref().unwrap_or("-"),
+                    p.wake_mac.as_deref().unwrap_or("-"),
                     p.auto_connect,
                     perms.remote_control,
                     perms.display_takeover,
@@ -183,6 +195,18 @@ async fn main() -> Result<()> {
                 bail!("no paired device matches '{who}'");
             }
             println!("Removed {n} device(s).");
+        }
+        Cmd::Wake { who, mac } => {
+            let report = match (who, mac) {
+                (_, Some(mac)) => da_core::wol::send_magic_packet(MacAddr::parse(&mac)?, None)?,
+                (Some(who), None) => node.wake_peer(&find_peer(&node, &who)?)?,
+                (None, None) => bail!("say which device to wake, or pass --mac"),
+            };
+            let to: Vec<String> = report.sent_to.iter().map(|a| a.to_string()).collect();
+            println!("Sent wake packets to {}.", to.join(", "));
+            for (a, e) in &report.failed {
+                println!("  could not send to {a}: {e}");
+            }
         }
         Cmd::Discover { secs } => {
             println!("Listening for {secs}s...");
