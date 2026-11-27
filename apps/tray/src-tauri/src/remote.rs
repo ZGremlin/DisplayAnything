@@ -14,12 +14,14 @@
 
 use crate::{ensure_share, fp_from, AppState, UiEvent};
 use da_core::da_input::{GrabEvent, InputEvent, MouseButton};
+use da_core::da_screen::audio::AudioPlayer;
 use da_core::da_screen::wire::{StartRequest, StreamSettings};
 use da_core::da_screen::{viewer::fit, Presenter, ViewMsg};
 use da_core::{InputShare, RemoteControl, DEFAULT_PORT};
 use raw_window_handle::HasWindowHandle;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -45,6 +47,8 @@ struct Session {
     presenter: Arc<Presenter>,
     window: tauri::Window,
     area: Area,
+    /// The host can send sound and switch it on and off.
+    host_audio: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -82,9 +86,20 @@ pub struct PeerScreens {
 }
 
 /// Running viewer sessions, by window label.
-#[derive(Default)]
 pub struct Viewers {
     inner: Arc<Mutex<Inner>>,
+    /// Play the other computers' sound (the setting, shared with every
+    /// open viewer).
+    audio: Arc<AtomicBool>,
+}
+
+impl Default for Viewers {
+    fn default() -> Self {
+        Viewers {
+            inner: Default::default(),
+            audio: Arc::new(AtomicBool::new(true)),
+        }
+    }
 }
 
 impl Viewers {
@@ -332,6 +347,8 @@ pub async fn open_remote(
     let monitor = display;
     tracing::info!(peer = %peer.name, %addr, ?monitor, "opening viewer");
     let settings = stream_settings(&app, &state, None);
+    let audio_on = state.settings.lock().unwrap().remote_audio;
+    viewers.audio.store(audio_on, Ordering::Relaxed);
     // Connect first, so a refusal shows as a message, not an empty window.
     let mut view = state
         .node
@@ -346,6 +363,7 @@ pub async fn open_remote(
                     let g = viewers.inner.lock().unwrap();
                     g.screens.get(&fingerprint).map_or(0, |s| s.shown)
                 }),
+                audio: audio_on && da_core::da_screen::audio::playback_supported(),
                 ..Default::default()
             },
         )
@@ -417,14 +435,22 @@ pub async fn open_remote(
     let inner = viewers.inner.clone();
     let label2 = label.clone();
     let fp2 = fingerprint.clone();
+    let host_audio = Arc::new(AtomicBool::new(false));
+    let host_audio2 = host_audio.clone();
+    let audio_on = viewers.audio.clone();
     let task = tauri::async_runtime::spawn(async move {
         let control = view.control();
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         let mut sized = false;
+        // The host's sound: its format, and the player while sound is on.
+        let mut sound: Option<da_core::da_screen::wire::AudioFormat> = None;
+        let mut player: Option<AudioPlayer> = None;
+        let mut player_failed = false;
         let end: Option<String> = loop {
             tokio::select! {
                 msg = view.next() => match msg {
                     Some(ViewMsg::Info(info)) => {
+                        host_audio2.store(info.audio, Ordering::Relaxed);
                         let resized = presenter.video_size() != Some((info.width, info.height));
                         presenter.set_video_size(info.width, info.height);
                         let now = Screens { count: info.displays.max(1), shown: info.display };
@@ -451,6 +477,34 @@ pub async fn open_remote(
                             control.request_keyframe();
                         }
                     }
+                    Some(ViewMsg::AudioInfo(f)) => {
+                        if sound != Some(f) {
+                            sound = Some(f);
+                            player = None;
+                            player_failed = false;
+                        }
+                    }
+                    Some(ViewMsg::Audio(chunk)) => {
+                        if !audio_on.load(Ordering::Relaxed) {
+                            player = None;
+                            continue;
+                        }
+                        if player.is_none() && !player_failed {
+                            if let Some(f) = sound {
+                                match AudioPlayer::new(f) {
+                                    Ok(p) => player = Some(p),
+                                    Err(e) => {
+                                        // Don't retry on every chunk.
+                                        player_failed = true;
+                                        tracing::warn!("can't play {name}'s sound: {e:#}");
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(p) = &player {
+                            p.push(&chunk.data);
+                        }
+                    }
                     Some(ViewMsg::Error(e)) => break Some(format!("{name} stopped sharing its screen: {e}")),
                     Some(ViewMsg::Stop) | None => break Some(format!("{name} ended the screen session")),
                     Some(_) => {}
@@ -458,6 +512,10 @@ pub async fn open_remote(
                 _ = tick.tick() => {
                     if presenter.take_keyframe_request() {
                         control.request_keyframe();
+                    }
+                    // Sound switched off: stop playing what is queued.
+                    if player.is_some() && !audio_on.load(Ordering::Relaxed) {
+                        player = None;
                     }
                 }
             }
@@ -480,6 +538,7 @@ pub async fn open_remote(
             presenter: presenter2,
             window: window.clone(),
             area,
+            host_audio,
         },
     );
     if window.is_focused().unwrap_or(false) {
@@ -593,6 +652,8 @@ pub struct Choice {
 pub struct RemoteSettings {
     resolution: String,
     quality: String,
+    /// Play the other computer's sound.
+    audio: bool,
     resolutions: Vec<Choice>,
     qualities: Vec<Choice>,
 }
@@ -604,6 +665,7 @@ pub fn remote_settings(state: State<'_, AppState>) -> RemoteSettings {
     RemoteSettings {
         resolution: s.remote_resolution.clone(),
         quality: s.remote_quality.clone(),
+        audio: s.remote_audio,
         resolutions: RESOLUTIONS
             .iter()
             .map(|&(id, label)| Choice { id, label })
@@ -615,15 +677,68 @@ pub fn remote_settings(state: State<'_, AppState>) -> RemoteSettings {
     }
 }
 
-/// Change the remote screen resolution or quality. Open viewer windows
-/// switch right away.
+/// Change the remote screen resolution, quality or sound. Open viewer
+/// windows switch right away.
 #[tauri::command]
 pub fn set_remote_settings(
     app: AppHandle,
     resolution: Option<String>,
     quality: Option<String>,
+    audio: Option<bool>,
 ) -> Result<(), String> {
+    if let Some(on) = audio {
+        set_audio(&app, on);
+    }
+    if resolution.is_none() && quality.is_none() {
+        return Ok(());
+    }
     change_settings(&app, resolution, quality)
+}
+
+/// Turn the other computers' sound on or off, saved and applied to open
+/// viewer windows (the host stops or starts recording).
+fn set_audio(app: &AppHandle, on: bool) {
+    let state = app.state::<AppState>();
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.remote_audio = on;
+        s.save(&state.data_dir);
+    }
+    let viewers = app.state::<Viewers>();
+    viewers.audio.store(on, Ordering::Relaxed);
+    let open: Vec<RemoteControl> = viewers
+        .inner
+        .lock()
+        .unwrap()
+        .sessions
+        .values()
+        .filter(|s| s.host_audio.load(Ordering::Relaxed))
+        .map(|s| s.control.clone())
+        .collect();
+    for control in &open {
+        control.set_audio(on);
+    }
+    tracing::info!(on, "remote screen sound changed");
+    // Refresh the menus' check marks.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let windows: Vec<tauri::Window> = viewers
+            .inner
+            .lock()
+            .unwrap()
+            .sessions
+            .values()
+            .map(|s| s.window.clone())
+            .collect();
+        for w in windows {
+            if let Ok(m) = build_menu(app) {
+                let _ = w.set_menu(m);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    refresh_mac_menu(app, &viewers);
+    let _ = app.emit("da-event", UiEvent::PeersChanged);
 }
 
 fn change_settings(
@@ -678,6 +793,15 @@ pub fn on_menu(app: &AppHandle, id: &str) {
         change_settings(app, Some(r.to_string()), None)
     } else if let Some(q) = id.strip_prefix("rv-q:") {
         change_settings(app, None, Some(q.to_string()))
+    } else if id == "rv-audio" {
+        let on = app
+            .state::<AppState>()
+            .settings
+            .lock()
+            .unwrap()
+            .remote_audio;
+        set_audio(app, !on);
+        Ok(())
     } else {
         return;
     };
@@ -686,17 +810,22 @@ pub fn on_menu(app: &AppHandle, id: &str) {
     }
 }
 
-fn build_submenus(
-    app: &AppHandle,
-) -> tauri::Result<(
+type Submenus = (
     tauri::menu::Submenu<tauri::Wry>,
     tauri::menu::Submenu<tauri::Wry>,
-)> {
+    tauri::menu::Submenu<tauri::Wry>,
+);
+
+fn build_submenus(app: &AppHandle) -> tauri::Result<Submenus> {
     use tauri::menu::{CheckMenuItem, IsMenuItem, Submenu};
-    let (res, q) = {
+    let (res, q, audio) = {
         let state = app.state::<AppState>();
         let s = state.settings.lock().unwrap();
-        (s.remote_resolution.clone(), s.remote_quality.clone())
+        (
+            s.remote_resolution.clone(),
+            s.remote_quality.clone(),
+            s.remote_audio,
+        )
     };
     let res_items = RESOLUTIONS
         .iter()
@@ -729,13 +858,16 @@ fn build_submenus(
     }
     let res_menu = Submenu::with_items(app, "Resolution", true, &refs(&res_items))?;
     let q_menu = Submenu::with_items(app, "Quality", true, &refs(&q_items))?;
-    Ok((res_menu, q_menu))
+    let sound =
+        CheckMenuItem::with_id(app, "rv-audio", "Play its sound", true, audio, None::<&str>)?;
+    let sound_menu = Submenu::with_items(app, "Sound", true, &[&sound])?;
+    Ok((res_menu, q_menu, sound_menu))
 }
 
 #[cfg(not(target_os = "macos"))]
 fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    let (r, q) = build_submenus(app)?;
-    tauri::menu::Menu::with_items(app, &[&r, &q])
+    let (r, q, a) = build_submenus(app)?;
+    tauri::menu::Menu::with_items(app, &[&r, &q, &a])
 }
 
 /// macOS: a "Remote screen" menu in the menu bar, rebuilt when the
@@ -745,7 +877,7 @@ fn refresh_mac_menu(app: &AppHandle, viewers: &Viewers) {
     use tauri::menu::Submenu;
     let Some(bar) = app.menu() else { return };
     let built = build_submenus(app)
-        .and_then(|(r, q)| Submenu::with_items(app, "Remote screen", true, &[&r, &q]));
+        .and_then(|(r, q, a)| Submenu::with_items(app, "Remote screen", true, &[&r, &q, &a]));
     // Menu calls wait for the main thread: never hold the lock over them.
     let old = viewers.inner.lock().unwrap().mac_menu.take();
     if let Some(old) = old {

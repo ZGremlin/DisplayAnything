@@ -160,6 +160,7 @@ pub struct Node {
     connector: TlsConnector,
     input_target: Mutex<Option<Arc<dyn crate::input::InputTarget>>>,
     screen_starter: Mutex<Option<crate::remote::ScreenStarter>>,
+    audio_starter: Mutex<Option<crate::remote::AudioStarter>>,
     /// Screen sessions this machine is serving right now.
     pub(crate) viewers: std::sync::atomic::AtomicUsize,
 }
@@ -180,6 +181,7 @@ impl Node {
             connector,
             input_target: Mutex::new(None),
             screen_starter: Mutex::new(None),
+            audio_starter: Mutex::new(None),
             viewers: Default::default(),
         }))
     }
@@ -235,6 +237,16 @@ impl Node {
     /// (tests use a fake source). None uses the real screen.
     pub fn set_screen_starter(&self, starter: Option<crate::remote::ScreenStarter>) {
         *self.screen_starter.lock().unwrap() = starter;
+    }
+
+    /// Replace how this machine's sound is recorded for remote control
+    /// (tests use a fake source). None uses the real sound output.
+    pub fn set_audio_starter(&self, starter: Option<crate::remote::AudioStarter>) {
+        *self.audio_starter.lock().unwrap() = starter;
+    }
+
+    pub(crate) fn audio_starter(&self) -> Option<crate::remote::AudioStarter> {
+        self.audio_starter.lock().unwrap().clone()
     }
 
     /// Someone is viewing (and may be controlling) this screen. Shared

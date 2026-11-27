@@ -12,6 +12,11 @@ serde.workspace = true
 serde_json.workspace = true
 raw-window-handle = "0.6"
 
+# Sound: WASAPI loopback capture on Windows, playback everywhere we view.
+# Not on Linux, where it would pull in ALSA for nothing.
+[target.'cfg(any(windows, target_os = "macos", target_os = "ios"))'.dependencies]
+cpal = "0.18"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Foundation",
@@ -50,3 +55,4 @@ objc2-av-foundation = { version = "0.3", features = ["objc2-core-media", "objc2-
 objc2-quartz-core = "0.3"
 objc2-app-kit = "0.3"
 objc2-core-graphics = "0.3"
+objc2-core-audio-types = "0.3"

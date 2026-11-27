@@ -22,6 +22,9 @@ const TAG_INPUT: u8 = 7;
 const TAG_POINTER: u8 = 8;
 const TAG_SELECT_DISPLAY: u8 = 9;
 const TAG_CONFIGURE: u8 = 10;
+const TAG_AUDIO_INFO: u8 = 11;
+const TAG_AUDIO: u8 = 12;
+const TAG_SET_AUDIO: u8 = 13;
 
 const FLAG_KEYFRAME: u8 = 1;
 
@@ -47,6 +50,10 @@ pub struct StartRequest {
     pub max_width: u32,
     #[serde(default)]
     pub max_height: u32,
+    /// Also send the host's sound. A host that predates audio ignores
+    /// this and never sends any, so it stays compatible both ways.
+    #[serde(default)]
+    pub audio: bool,
 }
 
 impl Default for StartRequest {
@@ -58,8 +65,26 @@ impl Default for StartRequest {
             bitrate_kbps: 40_000,
             max_width: 0,
             max_height: 0,
+            audio: false,
         }
     }
+}
+
+/// The host's sound format: 16-bit signed little-endian PCM, channels
+/// interleaved. Uncompressed stereo at 48 kHz is about 1.5 Mbit/s, small
+/// next to the video on a LAN.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioFormat {
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+/// A few milliseconds of the host's sound in [`AudioFormat`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioChunk {
+    /// Capture time on the host, in microseconds from capture start.
+    pub pts_us: u64,
+    pub data: Vec<u8>,
 }
 
 /// Picture size and quality, changeable during a session.
@@ -83,6 +108,10 @@ pub struct StreamInfo {
     /// Which of them this stream shows (0 = main).
     #[serde(default)]
     pub display: u32,
+    /// The host can send its sound and understands
+    /// [`ViewMsg::SetAudio`]. Older hosts leave it out (false).
+    #[serde(default)]
+    pub audio: bool,
 }
 
 /// One encoded video frame (an H.264 access unit in Annex B form).
@@ -119,6 +148,16 @@ pub enum ViewMsg {
     SelectDisplay(u32),
     /// Viewer -> host: change the picture size or quality.
     Configure(StreamSettings),
+    /// Host -> viewer: sound follows in this format (sent before the first
+    /// chunk and whenever it changes). Only sent when the viewer asked for
+    /// sound, so older viewers never see it.
+    AudioInfo(AudioFormat),
+    /// Host -> viewer: a chunk of sound.
+    Audio(AudioChunk),
+    /// Viewer -> host: turn the sound on or off during a session. Only send
+    /// it to a host that has sent [`ViewMsg::AudioInfo`] or answered a
+    /// start request with sound on: older hosts don't know it.
+    SetAudio(bool),
 }
 
 impl ViewMsg {
@@ -132,6 +171,15 @@ impl ViewMsg {
             ViewMsg::Input(b) => (TAG_INPUT, b.clone()),
             ViewMsg::Configure(c) => (TAG_CONFIGURE, serde_json::to_vec(c).unwrap_or_default()),
             ViewMsg::SelectDisplay(d) => (TAG_SELECT_DISPLAY, d.to_be_bytes().to_vec()),
+            ViewMsg::AudioInfo(f) => (TAG_AUDIO_INFO, serde_json::to_vec(f).unwrap_or_default()),
+            ViewMsg::SetAudio(on) => (TAG_SET_AUDIO, vec![u8::from(*on)]),
+            ViewMsg::Audio(a) => {
+                out.push(TAG_AUDIO);
+                out.extend_from_slice(&((8 + a.data.len()) as u32).to_be_bytes());
+                out.extend_from_slice(&a.pts_us.to_be_bytes());
+                out.extend_from_slice(&a.data);
+                return;
+            }
             ViewMsg::Pointer { x, y } => {
                 let mut b = x.to_be_bytes().to_vec();
                 b.extend_from_slice(&y.to_be_bytes());
@@ -175,6 +223,19 @@ impl ViewMsg {
             TAG_STOP => ViewMsg::Stop,
             TAG_INPUT => ViewMsg::Input(body.to_vec()),
             TAG_CONFIGURE => ViewMsg::Configure(serde_json::from_slice(body)?),
+            TAG_AUDIO_INFO => ViewMsg::AudioInfo(serde_json::from_slice(body)?),
+            TAG_SET_AUDIO => ViewMsg::SetAudio(body.first().is_some_and(|b| *b != 0)),
+            TAG_AUDIO => {
+                if body.len() < 8 {
+                    bail!("short audio chunk");
+                }
+                let mut pts = [0u8; 8];
+                pts.copy_from_slice(&body[..8]);
+                ViewMsg::Audio(AudioChunk {
+                    pts_us: u64::from_be_bytes(pts),
+                    data: body[8..].to_vec(),
+                })
+            }
             TAG_SELECT_DISPLAY => {
                 if body.len() < 4 {
                     bail!("short display selection");
@@ -232,6 +293,7 @@ mod tests {
             codec: Codec::H264,
             displays: 2,
             display: 1,
+            audio: true,
         }));
         roundtrip(ViewMsg::Video(EncodedFrame {
             keyframe: true,
@@ -248,6 +310,28 @@ mod tests {
             max_height: 1080,
             bitrate_kbps: 80_000,
         }));
+        roundtrip(ViewMsg::Start(StartRequest {
+            audio: true,
+            ..Default::default()
+        }));
+        roundtrip(ViewMsg::AudioInfo(AudioFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        }));
+        roundtrip(ViewMsg::Audio(AudioChunk {
+            pts_us: 10_000,
+            data: vec![1, 2, 3, 4],
+        }));
+        roundtrip(ViewMsg::SetAudio(true));
+        roundtrip(ViewMsg::SetAudio(false));
+    }
+
+    #[test]
+    fn start_request_without_audio_field_still_parses() {
+        // What a viewer from before audio sends.
+        let old = br#"{"display":0,"fps":60,"bitrate_kbps":40000,"max_width":0,"max_height":0}"#;
+        let r: StartRequest = serde_json::from_slice(old).unwrap();
+        assert!(!r.audio);
     }
 
     #[test]

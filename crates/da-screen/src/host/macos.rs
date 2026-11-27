@@ -93,7 +93,7 @@ pub(super) struct Host {
 
 /// Lets Objective-C objects that are safe to message from any thread
 /// (SCStream and our own output object) live in a Send struct.
-struct SendBox<T>(T);
+pub(crate) struct SendBox<T>(pub(crate) T);
 unsafe impl<T> Send for SendBox<T> {}
 unsafe impl<T> Sync for SendBox<T> {}
 
@@ -161,6 +161,7 @@ impl Host {
             codec: Codec::H264,
             displays: display_count,
             display: display_index,
+            audio: false,
         }));
 
         let stream = unsafe {
@@ -527,11 +528,11 @@ impl StreamOutput {
     }
 }
 
-fn describe(e: &NSError) -> String {
+pub(crate) fn describe(e: &NSError) -> String {
     e.localizedDescription().to_string()
 }
 
-fn shareable_content() -> Result<SendBox<Retained<SCShareableContent>>> {
+pub(crate) fn shareable_content() -> Result<SendBox<Retained<SCShareableContent>>> {
     let (tx, rx) = channel::<std::result::Result<SendBox<Retained<SCShareableContent>>, String>>();
     let block = RcBlock::new(move |content: *mut SCShareableContent, err: *mut NSError| {
         let r = match unsafe { Retained::retain(content) } {
