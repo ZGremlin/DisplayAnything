@@ -40,6 +40,8 @@ protocol ControlSurfaceDelegate: AnyObject {
     func surfacePinch(_ state: UIGestureRecognizer.State, scale: CGFloat)
     /// Two fingers tapped twice: reset the local zoom and pan.
     func surfaceResetZoom()
+    /// Three fingers tapped: show or hide the keyboard.
+    func surfaceThreeFingerTap()
 }
 
 /// A clear view over the picture that turns touches into pointer actions.
@@ -61,6 +63,9 @@ final class ControlSurfaceView: UIView, UIGestureRecognizerDelegate {
         twoDoubleTap.numberOfTouchesRequired = 2
         twoDoubleTap.numberOfTapsRequired = 2
         twoTap.require(toFail: twoDoubleTap)
+        let threeTap = UITapGestureRecognizer(target: self, action: #selector(tap3(_:)))
+        threeTap.numberOfTouchesRequired = 3
+        twoTap.require(toFail: threeTap)
 
         let long = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         long.minimumPressDuration = 0.25
@@ -77,7 +82,7 @@ final class ControlSurfaceView: UIView, UIGestureRecognizerDelegate {
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinch(_:)))
 
         tap.require(toFail: twoTap)
-        for g in [tap, twoTap, twoDoubleTap, long, drag, scroll, pinch] as [UIGestureRecognizer] {
+        for g in [tap, twoTap, twoDoubleTap, threeTap, long, drag, scroll, pinch] as [UIGestureRecognizer] {
             g.delegate = self
             addGestureRecognizer(g)
         }
@@ -99,6 +104,10 @@ final class ControlSurfaceView: UIView, UIGestureRecognizerDelegate {
 
     @objc private func tap2(_ g: UITapGestureRecognizer) {
         delegate?.surfaceTap(at: g.location(in: self), fingers: 2)
+    }
+
+    @objc private func tap3(_ g: UITapGestureRecognizer) {
+        delegate?.surfaceThreeFingerTap()
     }
 
     @objc private func tap2Double(_ g: UITapGestureRecognizer) {

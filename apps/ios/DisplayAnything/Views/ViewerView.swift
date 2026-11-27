@@ -4,8 +4,9 @@ import SwiftUI
 
 /// One computer's screen, edge to edge. The controls stay hidden: swipe in
 /// from the left edge for the control panel (Touch, Trackpad or View only,
-/// keyboard, key bar, disconnect) and from the right edge for the key bar
-/// (Esc, Tab, Ctrl, Alt, Win, arrows and so on).
+/// monitor, keyboard, key bar, text box, settings, disconnect) and from the
+/// right edge for the key bar (Esc, Tab, Ctrl, Alt, Win, arrows and so on).
+/// Tap with three fingers to show or hide the keyboard.
 struct ViewerView: View {
     let desktop: Desktop
     @EnvironmentObject private var store: DesktopStore
@@ -15,8 +16,22 @@ struct ViewerView: View {
 
     @AppStorage("controlMode") private var mode: ControlMode = .cursor
     @AppStorage(StreamQuality.key) private var quality: StreamQuality = .auto
+    @AppStorage(ViewerSetting.naturalScroll) private var naturalScroll = true
+    @AppStorage(ViewerSetting.pointerSpeed) private var pointerSpeed = 1.0
+    @AppStorage(ViewerSetting.haptics) private var haptics = true
+    @AppStorage(ViewerSetting.fitAboveKeyboard) private var fitAboveKeyboard = true
+    @AppStorage(ViewerSetting.showStats) private var showStats = false
+    @AppStorage(ViewerSetting.keepAwake) private var keepAwake = true
+    @State private var hostKeys: HostKeys = .windows
     @AppStorage(ViewerSession.soundKey) private var sound = true
     @State private var keyboard = false
+    @State private var composing = false
+    @State private var composeText = ""
+    /// Whether the keyboard was up when the text box opened (it comes back after).
+    @State private var keyboardBeforeCompose = false
+    @FocusState private var composeFocused: Bool
+    /// How much of the screen the on-screen keyboard (and its key row) covers.
+    @State private var keyboardInset: CGFloat = 0
     @State private var panel = false
     @State private var keyBar = false
     @State private var scale: CGFloat = 1
@@ -27,6 +42,7 @@ struct ViewerView: View {
 
     var body: some View {
         GeometryReader { geo in
+            let area = pictureArea(geo.size)
             ZStack {
                 Color.black
                 StreamLayerView { session.attach(view: $0) }
@@ -65,18 +81,31 @@ struct ViewerView: View {
                 KeyboardInput(
                     isActive: $keyboard,
                     latched: session.latched,
+                    locked: session.locked,
+                    hostKeys: hostKeys,
                     onText: { text in session.type(text) },
                     onKey: { usage in session.press(usage) },
-                    onToggleModifier: { usage in session.toggleLatch(usage) }
+                    onToggleModifier: { usage in session.toggleLatch(usage) },
+                    onLockModifier: { usage in session.toggleLock(usage) },
+                    onShortcut: { shortcut in session.press(shortcut) },
+                    onCompose: { openCompose() }
                 )
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
 
                 overlay
             }
-            .onChange(of: layout(size: geo.size), initial: true) { _, l in session.layout = l }
+            // With "Fit above keyboard" on, the picture shrinks to the part of
+            // the screen the keyboard leaves free.
+            .frame(width: area.width, height: area.height)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(Color.black)
+            .clipped()
+            .onChange(of: layout(size: area), initial: true) { _, l in session.layout = l }
         }
         .ignoresSafeArea()
+        .overlay(alignment: .top) { statsBadge }
+        .overlay(alignment: .top) { composeBox }
         // Everything below sits above the control surface, so touches on it
         // never reach the computer.
         .overlay { edges }
@@ -107,6 +136,10 @@ struct ViewerView: View {
             session.onResetZoom = {
                 withAnimation(.snappy) { scale = 1; offset = .zero }
             }
+            session.onToggleKeyboard = {
+                if composing { closeCompose() } else { keyboard.toggle() }
+            }
+            hostKeys = HostKeys.saved(for: desktop.fingerprint)
             session.start(desktop: desktop, client: store.client)
         }
         .onChange(of: mode) { _, _ in
@@ -114,12 +147,25 @@ struct ViewerView: View {
             session.syncPointer()
         }
         .onChange(of: quality) { _, q in session.apply(q) }
+        .onChange(of: hostKeys) { _, k in
+            UserDefaults.standard.set(k.rawValue, forKey: HostKeys.key(for: desktop.fingerprint))
+        }
+        .onChange(of: session.isLive && keepAwake, initial: true) { _, awake in
+            UIApplication.shared.isIdleTimerDisabled = awake
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            keyboardInset = Self.overlap(note)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardInset = 0
+        }
         .onChange(of: sound) { _, on in session.setSound(on) }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { session.releaseAll() }
         }
         .onDisappear {
             keyboard = false
+            UIApplication.shared.isIdleTimerDisabled = false
             session.stop()
         }
     }
@@ -143,7 +189,7 @@ struct ViewerView: View {
                 }
                 Spacer(minLength: 0)
                 if keyBar {
-                    KeyBar(session: session)
+                    KeyBar(session: session, hostKeys: hostKeys)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 } else {
                     edgeStrip(opensFrom: .trailing)
@@ -249,6 +295,21 @@ struct ViewerView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if case .live(_, let displays, let display) = session.state, displays > 1 {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Monitor").font(.caption).foregroundStyle(.secondary)
+                    Picker("Monitor", selection: Binding(
+                        get: { display },
+                        set: { session.selectDisplay($0) }
+                    )) {
+                        ForEach(0..<displays, id: \.self) { i in
+                            Text("\(i + 1)").tag(i)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+
             Toggle(isOn: $keyboard) {
                 Label("Keyboard", systemImage: "keyboard")
             }
@@ -256,6 +317,51 @@ struct ViewerView: View {
 
             Toggle(isOn: $keyBar) {
                 Label("Key bar", systemImage: "command")
+            }
+
+            Button {
+                closePanels()
+                openCompose()
+            } label: {
+                Label("Text box", systemImage: "pencil")
+            }
+            .disabled(!session.isLive)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Keys for").font(.caption).foregroundStyle(.secondary)
+                Picker("Keys for", selection: $hostKeys) {
+                    ForEach(HostKeys.allCases) { k in
+                        Text(k.title).tag(k)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Labels the modifier keys (\(hostKeys.altLabel), \(hostKeys.metaLabel)) and picks the shortcuts on the extended keys panel.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Trackpad speed").font(.caption).foregroundStyle(.secondary)
+                        Slider(value: $pointerSpeed, in: 0.5...2.5, step: 0.1) {
+                            Text("Trackpad speed")
+                        } minimumValueLabel: {
+                            Image(systemName: "tortoise")
+                        } maximumValueLabel: {
+                            Image(systemName: "hare")
+                        }
+                    }
+                    Toggle("Natural scrolling", isOn: $naturalScroll)
+                    Toggle("Haptic feedback", isOn: $haptics)
+                    Toggle("Fit above keyboard", isOn: $fitAboveKeyboard)
+                    Toggle("Show stats", isOn: $showStats)
+                    Toggle("Keep screen on", isOn: $keepAwake)
+                }
+                .padding(.top, 8)
+            } label: {
+                Label("Settings", systemImage: "gearshape")
             }
 
             Toggle(isOn: $sound) {
@@ -275,12 +381,98 @@ struct ViewerView: View {
     private var modeHelp: String {
         switch mode {
         case .touch:
-            return "Tap to click. Drag to drag. Press and hold for a right click, or hold then move to drag. Two fingers scroll, or move the picture when zoomed in. Pinch to zoom; double-tap with two fingers to reset."
+            return "Tap to click. Drag to drag. Press and hold for a right click, or hold then move to drag. Two fingers scroll, or move the picture when zoomed in. Pinch to zoom; double-tap with two fingers to reset. Tap with three fingers for the keyboard."
         case .cursor:
-            return "Drag to move the pointer, tap to click, two-finger tap to right click. Press and hold, then move, to drag. Two fingers scroll, or move the picture when zoomed in. Pinch to zoom; double-tap with two fingers to reset."
+            return "Drag to move the pointer, tap to click, two-finger tap to right click. Press and hold, then move, to drag. Two fingers scroll, or move the picture when zoomed in. Pinch to zoom; double-tap with two fingers to reset. Tap with three fingers for the keyboard."
         case .view:
             return "Pinch and drag move the picture on this phone. Nothing is sent to the computer."
         }
+    }
+
+    // MARK: Text box, stats, keyboard room
+
+    /// Jump-style text box: type (with autocorrect and dictation) or dictate
+    /// a whole piece of text, check it, then send it to the computer.
+    @ViewBuilder
+    private var composeBox: some View {
+        if composing {
+            VStack(spacing: 8) {
+                TextField("Type or dictate, then send", text: $composeText)
+                    .focused($composeFocused)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { sendCompose(thenReturn: false) }
+                HStack {
+                    Button("Cancel", role: .cancel) { closeCompose() }
+                    Spacer()
+                    Button("Send") { sendCompose(thenReturn: false) }
+                        .disabled(composeText.isEmpty)
+                    Button("Send + Return") { sendCompose(thenReturn: true) }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: 560)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .environment(\.colorScheme, .dark)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    private func openCompose() {
+        // The hidden key catcher hands the keyboard over to the text box.
+        keyboardBeforeCompose = keyboard
+        keyboard = false
+        composeText = ""
+        withAnimation(.snappy) { composing = true }
+        DispatchQueue.main.async { composeFocused = true }
+    }
+
+    private func sendCompose(thenReturn: Bool) {
+        session.send(text: composeText, thenReturn: thenReturn)
+        closeCompose()
+    }
+
+    private func closeCompose() {
+        composeFocused = false
+        withAnimation(.snappy) { composing = false }
+        // Back to the key catcher, so typing keeps going to the computer.
+        if keyboardBeforeCompose {
+            DispatchQueue.main.async { keyboard = true }
+        }
+    }
+
+    @ViewBuilder
+    private var statsBadge: some View {
+        if showStats, session.isLive {
+            let size = session.videoSize
+            let s = session.stats
+            Text(String(format: "%.0f fps · %.1f Mbit/s · %d×%d",
+                        s?.fps ?? 0, s?.mbps ?? 0, Int(size.width), Int(size.height)))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(.black.opacity(0.5), in: Capsule())
+                .padding(.top, 6)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// The part of the screen the picture uses.
+    private func pictureArea(_ size: CGSize) -> CGSize {
+        guard fitAboveKeyboard, keyboardInset > 0, !composing else { return size }
+        return CGSize(width: size.width, height: max(size.height - keyboardInset, size.height * 0.3))
+    }
+
+    /// How far up the screen the keyboard reaches, from a keyboard frame
+    /// notification.
+    @MainActor private static func overlap(_ note: Notification) -> CGFloat {
+        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+              let screen = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen
+        else { return 0 }
+        return max(0, screen.bounds.maxY - frame.minY)
     }
 
     private func closePanels() {
@@ -351,6 +543,7 @@ struct ViewerView: View {
 /// for the next key, click or typed character, then let go.
 struct KeyBar: View {
     @ObservedObject var session: ViewerSession
+    let hostKeys: HostKeys
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -358,8 +551,8 @@ struct KeyBar: View {
                 key("esc", HIDKey.escape)
                 key("tab", HIDKey.tab)
                 modifier("ctrl", HIDKey.control)
-                modifier("alt", HIDKey.alt)
-                modifier("win", HIDKey.meta)
+                modifier(hostKeys.altLabel.lowercased(), HIDKey.alt)
+                modifier(hostKeys.metaLabel.lowercased(), HIDKey.meta)
                 modifier("shift", HIDKey.shift)
                 key("arrow.up", HIDKey.up, symbol: true)
                 HStack(spacing: 6) {
@@ -398,7 +591,7 @@ struct KeyBar: View {
     }
 
     private func modifier(_ label: String, _ usage: UInt16) -> some View {
-        let on = session.latched.contains(usage)
+        let on = session.latched.contains(usage) || session.locked.contains(usage)
         return Button {
             session.toggleLatch(usage)
         } label: {
@@ -525,6 +718,8 @@ final class ViewerSession: ObservableObject {
     /// Two-finger drag while zoomed in pans the picture on the phone.
     var onPan: ((CGPoint) -> Void)?
     var onResetZoom: (() -> Void)?
+    /// Three-finger tap shows or hides the keyboard.
+    var onToggleKeyboard: (() -> Void)?
     private var scrollRemainder = CGPoint.zero
     private var dragging = false
     private var lastHold = CGPoint.zero
@@ -563,6 +758,7 @@ final class ViewerSession: ObservableObject {
         waking = wakeFirst
         let sink = StreamSink(view: view)
         sink.onState = { [weak self] in self?.state = $0 }
+        sink.onStats = { [weak self] in self?.stats = $0 }
         view.needsKeyframe = { [weak self] in
             Task { @MainActor in self?.screen?.requestKeyframe() }
         }
@@ -615,6 +811,14 @@ final class ViewerSession: ObservableObject {
         view?.reset()
     }
 
+    /// Frame rate and bit rate over the last second.
+    @Published private(set) var stats: StreamStats?
+
+    /// Show another of the computer's monitors.
+    func selectDisplay(_ index: Int) {
+        screen?.selectDisplay(display: UInt32(index))
+    }
+
     // MARK: Sound
 
     static let soundKey = "playSound"
@@ -650,13 +854,19 @@ final class ViewerSession: ObservableObject {
     /// Modifiers latched on the key bar: held for the next key, click or
     /// typed character, then let go.
     @Published private(set) var latched: [UInt16] = []
+    /// Modifiers locked on (press and hold on the key row): held for every
+    /// key, click and typed character until tapped again.
+    @Published private(set) var locked: [UInt16] = []
 
     /// A modifier on the key row or key bar. The first tap latches it for
     /// the next key or click (Win, then Up sends Win+Up). Tapping it again
     /// while it is latched presses it on its own, with any other latched
     /// modifiers held: Win twice opens the Start menu.
     func toggleLatch(_ usage: UInt16) {
-        if let i = latched.firstIndex(of: usage) {
+        if let i = locked.firstIndex(of: usage) {
+            // A locked modifier is let go by tapping it.
+            locked.remove(at: i)
+        } else if let i = latched.firstIndex(of: usage) {
             latched.remove(at: i)
             press(usage)
         } else {
@@ -664,10 +874,40 @@ final class ViewerSession: ObservableObject {
         }
     }
 
+    /// Lock a modifier on (or let go of a locked one).
+    func toggleLock(_ usage: UInt16) {
+        latched.removeAll { $0 == usage }
+        if let i = locked.firstIndex(of: usage) {
+            locked.remove(at: i)
+        } else {
+            locked.append(usage)
+        }
+    }
+
+    /// The modifiers to hold for the next key or click: the locked ones, and
+    /// the latched ones (which are used up).
     private func takeLatched() -> [UInt16] {
-        let mods = latched
-        if !mods.isEmpty { latched.removeAll() }
+        let mods = locked + latched.filter { !locked.contains($0) }
+        if !latched.isEmpty { latched.removeAll() }
         return mods
+    }
+
+    /// A ready-made combination from the extended keys panel, with anything
+    /// latched or locked held as well.
+    func press(_ shortcut: Shortcut) {
+        guard let screen else { return }
+        var modifiers = takeLatched()
+        for m in shortcut.modifiers where !modifiers.contains(m) { modifiers.append(m) }
+        for m in modifiers { screen.key(usage: m, down: true) }
+        screen.key(usage: shortcut.key, down: true)
+        screen.key(usage: shortcut.key, down: false)
+        for m in modifiers.reversed() { screen.key(usage: m, down: false) }
+    }
+
+    /// Type a whole piece of text from the text box, optionally with Return.
+    func send(text: String, thenReturn: Bool) {
+        if !text.isEmpty { _ = screen?.typeText(text: text, modifiers: []) }
+        if thenReturn { press(HIDKey.enter) }
     }
 
     func type(_ text: String) {
@@ -691,6 +931,7 @@ final class ViewerSession: ObservableObject {
             holding = false
         }
         latched.removeAll()
+        locked.removeAll()
         screen?.releaseAll()
     }
 
@@ -733,7 +974,9 @@ final class ViewerSession: ObservableObject {
         let shown = layout.shownSize
         guard shown.width > 0, shown.height > 0 else { return }
         let speed = hypot(delta.x, delta.y)
-        let gain = 1.2 + min(speed / 12, 2.0)
+        let saved = UserDefaults.standard.double(forKey: ViewerSetting.pointerSpeed)
+        let factor = saved == 0 ? 1 : saved
+        let gain = (1.2 + min(speed / 12, 2.0)) * factor
         cursor = clamp(CGPoint(
             x: cursor.x + delta.x * gain / shown.width,
             y: cursor.y + delta.y * gain / shown.height))
@@ -768,6 +1011,7 @@ final class ViewerSession: ObservableObject {
 extension ViewerSession: ControlSurfaceDelegate {
     func surfaceTap(at point: CGPoint, fingers: Int) {
         let button: PointerButton = fingers == 2 ? .right : .left
+        if button == .right { haptic() }
         if mode == .touch {
             let f = layout.fraction(at: point)
             guard (0...1).contains(f.x), (0...1).contains(f.y) else { return }
@@ -793,7 +1037,7 @@ extension ViewerSession: ControlSurfaceDelegate {
             pointAt(cursor)
             pressLeft()
             holding = true
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            haptic()
         case .changed:
             guard holding else { return }
             if hypot(point.x - holdStart.x, point.y - holdStart.y) > 8 { holdMoved = true }
@@ -810,6 +1054,7 @@ extension ViewerSession: ControlSurfaceDelegate {
             holding = false
             releaseLeft()
             if mode == .touch, !holdMoved {
+                haptic()
                 click(.right)
             }
         }
@@ -845,6 +1090,15 @@ extension ViewerSession: ControlSurfaceDelegate {
         onResetZoom?()
     }
 
+    func surfaceThreeFingerTap() {
+        onToggleKeyboard?()
+    }
+
+    private func haptic() {
+        guard ViewerSetting.bool(ViewerSetting.haptics, default: true) else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
     func surfaceScroll(delta: CGPoint) {
         // Zoomed in: two fingers move the picture here instead of scrolling
         // the computer.
@@ -853,9 +1107,11 @@ extension ViewerSession: ControlSurfaceDelegate {
             return
         }
         // Natural scrolling: the content follows the fingers. 120 units is
-        // one wheel notch; four units per point of finger movement.
-        let x = -delta.x * 4 + scrollRemainder.x
-        let y = delta.y * 4 + scrollRemainder.y
+        // one wheel notch; four units per point of finger movement. With
+        // natural scrolling off, fingers move the scroll bar instead.
+        let k: CGFloat = ViewerSetting.bool(ViewerSetting.naturalScroll, default: true) ? 4 : -4
+        let x = -delta.x * k + scrollRemainder.x
+        let y = delta.y * k + scrollRemainder.y
         let dx = Int(x), dy = Int(y)
         scrollRemainder = CGPoint(x: x - CGFloat(dx), y: y - CGFloat(dy))
         if dx != 0 || dy != 0 { screen?.scroll(dx: Int32(dx), dy: Int32(dy)) }

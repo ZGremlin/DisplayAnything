@@ -6,7 +6,15 @@ import Foundation
 final class StreamSink: FrameSink, @unchecked Sendable {
     /// Called on the main thread with the stream's state changes.
     var onState: ((StreamState) -> Void)?
+    /// Called on the main thread about once a second while frames arrive.
+    var onStats: ((StreamStats) -> Void)?
     private let view: StreamView
+
+    // Frames and bytes since the last report (only touched on the Rust
+    // core's frame thread, which delivers frames one at a time).
+    private var frames = 0
+    private var bytes = 0
+    private var windowStart = Date()
 
     init(view: StreamView) {
         self.view = view
@@ -23,6 +31,16 @@ final class StreamSink: FrameSink, @unchecked Sendable {
 
     func onFrame(avcc: Data, ptsUs: UInt64, keyframe: Bool) {
         view.enqueue(avcc: avcc, ptsUs: ptsUs, keyframe: keyframe)
+        frames += 1
+        bytes += avcc.count
+        let elapsed = Date().timeIntervalSince(windowStart)
+        if elapsed >= 1 {
+            let stats = StreamStats(fps: Double(frames) / elapsed, mbps: Double(bytes) * 8 / elapsed / 1_000_000)
+            frames = 0
+            bytes = 0
+            windowStart = Date()
+            DispatchQueue.main.async { self.onStats?(stats) }
+        }
     }
 
     func onError(message: String) {
@@ -39,4 +57,10 @@ enum StreamState: Equatable {
     case live(size: CGSize, displays: Int, display: Int)
     case failed(String)
     case closed
+}
+
+/// How the stream is doing, for the stats overlay.
+struct StreamStats: Equatable {
+    var fps: Double
+    var mbps: Double
 }
